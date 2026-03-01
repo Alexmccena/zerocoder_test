@@ -1,0 +1,14 @@
+runtime:
+  environment: prod
+
+exchange:
+  testnet: false
+
+observability:
+  log_level: INFO
+
+symbols:
+  allowlist:
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT

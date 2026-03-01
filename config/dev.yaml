@@ -1,0 +1,12 @@
+runtime:
+  environment: dev
+
+exchange:
+  testnet: true
+
+observability:
+  log_level: DEBUG
+
+symbols:
+  allowlist:
+    - BTCUSDT

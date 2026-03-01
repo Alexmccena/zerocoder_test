@@ -1,0 +1,40 @@
+runtime:
+  service_name: trading-bot
+  mode: paper
+  environment: dev
+
+exchange:
+  primary: bybit
+  market_type: linear_perp
+  position_mode: one_way
+  account_alias: default
+  testnet: true
+
+symbols:
+  allowlist:
+    - BTCUSDT
+    - ETHUSDT
+
+storage:
+  postgres_dsn: ""
+  redis_dsn: ""
+
+observability:
+  log_level: INFO
+  http_host: 0.0.0.0
+  http_port: 8080
+
+strategy:
+  name: foundation_placeholder
+  default_timeframe: 1m
+
+risk:
+  max_open_positions: 2
+  risk_per_trade: 0.0025
+  max_daily_loss: 0.015
+
+llm:
+  enabled: false
+  provider: none
+  model_name: ""
+  timeout_seconds: 30
