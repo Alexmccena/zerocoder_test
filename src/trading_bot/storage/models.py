@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Numeric, String
+from sqlalchemy import JSON, Boolean, DateTime, Index, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -30,6 +30,30 @@ class RunSessionRecord(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="created")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InstrumentRecord(Base):
+    __tablename__ = "instruments"
+    __table_args__ = (
+        UniqueConstraint("exchange_name", "symbol", name="uq_instruments_exchange_symbol"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
+    exchange_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    market_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="trading")
+    tick_size: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    lot_size: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    min_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    min_notional: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    max_order_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    max_leverage: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    price_scale: Mapped[int | None] = mapped_column(nullable=True)
+    quote_asset: Mapped[str] = mapped_column(String(16), nullable=False)
+    base_asset: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
 class ConfigSnapshotRecord(Base):
@@ -67,6 +91,7 @@ class RiskDecisionRecord(Base):
 
 class OrderRecord(Base):
     __tablename__ = "orders"
+    __table_args__ = (Index("ix_orders_exchange_order_id", "exchange_name", "exchange_order_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
     run_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -80,6 +105,7 @@ class OrderRecord(Base):
     stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     reduce_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     exchange_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    time_in_force: Mapped[str | None] = mapped_column(String(32), nullable=True)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -92,18 +118,27 @@ class OrderRecord(Base):
 
 class FillRecord(Base):
     __tablename__ = "fills"
+    __table_args__ = (
+        Index("ix_fills_exchange_fill_id", "exchange_name", "exchange_fill_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
     order_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    exchange_name: Mapped[str] = mapped_column(String(32), nullable=False, default="bybit")
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    side: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     fee: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
     liquidity_type: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    exchange_fill_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
 class PositionRecord(Base):
     __tablename__ = "positions"
+    __table_args__ = (Index("ix_positions_exchange_symbol_status", "exchange_name", "symbol", "status"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
     run_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -112,11 +147,31 @@ class PositionRecord(Base):
     side: Mapped[str] = mapped_column(String(16), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    mark_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
     leverage: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=Decimal("1"))
     realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class AccountSnapshotRecord(Base):
+    __tablename__ = "account_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
+    run_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    exchange_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(32), nullable=False, default="UNIFIED")
+    equity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    available_balance: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    wallet_balance: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    margin_balance: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
 class LLMAdviceRecord(Base):

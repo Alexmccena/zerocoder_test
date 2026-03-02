@@ -19,3 +19,4 @@ build/
 alembic/__pycache__/
 postgres-data/
 redis-data/
+data/

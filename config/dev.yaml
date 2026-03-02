@@ -3,6 +3,7 @@ runtime:
 
 exchange:
   testnet: true
+  private_state_enabled: false
 
 observability:
   log_level: DEBUG
@@ -10,3 +11,6 @@ observability:
 symbols:
   allowlist:
     - BTCUSDT
+
+storage:
+  market_archive_root: data/dev_market_archive

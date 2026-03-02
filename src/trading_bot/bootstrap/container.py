@@ -1,21 +1,40 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from structlog.stdlib import BoundLogger
 
+from trading_bot.adapters.exchanges.bybit.capabilities import build_bybit_capabilities
+from trading_bot.adapters.exchanges.bybit.normalizers import normalize_private_message, normalize_public_message
+from trading_bot.adapters.exchanges.bybit.private_ws import BybitPrivateWebSocketClient
+from trading_bot.adapters.exchanges.bybit.public_ws import BybitPublicWebSocketClient
+from trading_bot.adapters.exchanges.bybit.rest import BybitRestClient
 from trading_bot.bootstrap.settings import BootstrapSettings
 from trading_bot.config.loader import load_app_config
 from trading_bot.config.schema import AppSettings
 from trading_bot.domain.enums import ServiceStatus
 from trading_bot.domain.models import HealthReport
+from trading_bot.marketdata.capture import CaptureService
+from trading_bot.marketdata.events import MarketEvent, PrivateStateEvent
 from trading_bot.observability.health import HealthChecker
 from trading_bot.observability.logging import configure_logging, shutdown_logging
 from trading_bot.observability.metrics import AppMetrics
 from trading_bot.storage.db import build_async_engine, create_session_factory, ping_database
+from trading_bot.storage.parquet import ParquetArchiveWriter
 from trading_bot.storage.redis import build_redis_client, ping_redis, publish_runtime_state
+from trading_bot.storage.repositories import (
+    AccountSnapshotRepository,
+    ConfigSnapshotRepository,
+    FillRepository,
+    InstrumentRepository,
+    OrderRepository,
+    PositionRepository,
+    RunSessionRepository,
+)
 
 
 @dataclass(slots=True)
@@ -82,3 +101,137 @@ class AppContainer:
 
 def build_container(bootstrap: BootstrapSettings | None = None) -> AppContainer:
     return AppContainer.build(bootstrap)
+
+
+@dataclass(slots=True)
+class CaptureContainer:
+    bootstrap: BootstrapSettings
+    config: AppSettings
+    config_hash: str
+    logger: BoundLogger
+    db_engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession]
+    redis_client: Redis
+    metrics: AppMetrics
+    rest_client: BybitRestClient
+    public_ws_client: BybitPublicWebSocketClient
+    private_ws_client: BybitPrivateWebSocketClient | None
+    capture_service: CaptureService
+
+    @classmethod
+    def build(
+        cls,
+        bootstrap: BootstrapSettings | None = None,
+        *,
+        public_only: bool = False,
+    ) -> "CaptureContainer":
+        env_settings = bootstrap or BootstrapSettings()
+        overrides = {"runtime": {"mode": "capture"}}
+        if public_only:
+            overrides["exchange"] = {"private_state_enabled": False}
+        loaded = load_app_config(env_settings, overrides=overrides)
+        logger = configure_logging(loaded.settings.observability, loaded.settings.runtime)
+        metrics = AppMetrics()
+        db_engine = build_async_engine(loaded.settings.storage.postgres_dsn)
+        session_factory = create_session_factory(db_engine)
+        redis_client = build_redis_client(loaded.settings.storage.redis_dsn)
+        rest_client = BybitRestClient(
+            config=loaded.settings,
+            api_key=env_settings.bybit_api_key,
+            api_secret=env_settings.bybit_api_secret,
+            metrics=metrics,
+        )
+        public_ws_client = BybitPublicWebSocketClient(config=loaded.settings, metrics=metrics)
+        private_ws_client = (
+            BybitPrivateWebSocketClient(config=loaded.settings, rest_client=rest_client, metrics=metrics)
+            if loaded.settings.exchange.private_state_enabled
+            else None
+        )
+        archive_writer = ParquetArchiveWriter(
+            root=Path(loaded.settings.storage.market_archive_root),
+            compression=loaded.settings.storage.parquet_compression,
+            flush_rows=loaded.settings.storage.parquet_flush_rows,
+            flush_seconds=loaded.settings.storage.parquet_flush_seconds,
+            metrics=metrics,
+        )
+        run_sessions = RunSessionRepository(session_factory)
+        config_snapshots = ConfigSnapshotRepository(session_factory)
+        instruments = InstrumentRepository(session_factory)
+        account_snapshots = AccountSnapshotRepository(session_factory)
+        orders = OrderRepository(session_factory)
+        fills = FillRepository(session_factory)
+        positions = PositionRepository(session_factory)
+
+        async def stream_public_events() -> AsyncIterator[MarketEvent]:
+            async for message in public_ws_client.stream(loaded.settings.symbols.allowlist):
+                for event in normalize_public_message(message):
+                    if isinstance(event, MarketEvent):
+                        yield event
+
+        async def stream_private_events() -> AsyncIterator[PrivateStateEvent]:
+            if private_ws_client is None:
+                return
+            async for message in private_ws_client.stream():
+                for event in normalize_private_message(message):
+                    if isinstance(event, PrivateStateEvent):
+                        yield event
+
+        capture_service = CaptureService(
+            config=loaded.settings,
+            config_hash=loaded.fingerprint,
+            logger=logger,
+            metrics=metrics,
+            redis_client=redis_client,
+            run_sessions=run_sessions,
+            config_snapshots=config_snapshots,
+            instruments=instruments,
+            account_snapshots=account_snapshots,
+            orders=orders,
+            fills=fills,
+            positions=positions,
+            archive_writer=archive_writer,
+            capabilities=build_bybit_capabilities(loaded.settings),
+            fetch_instruments=lambda: rest_client.fetch_instruments(loaded.settings.symbols.allowlist),
+            stream_public_events=stream_public_events,
+            fetch_open_interest=rest_client.fetch_open_interest,
+            fetch_funding_rate=rest_client.fetch_funding_rate,
+            fetch_account_state=rest_client.fetch_account_state if loaded.settings.exchange.private_state_enabled else None,
+            fetch_open_orders=(lambda: rest_client.fetch_open_orders()) if loaded.settings.exchange.private_state_enabled else None,
+            fetch_positions=rest_client.fetch_positions if loaded.settings.exchange.private_state_enabled else None,
+            stream_private_events=stream_private_events if loaded.settings.exchange.private_state_enabled else None,
+        )
+        return cls(
+            bootstrap=env_settings,
+            config=loaded.settings,
+            config_hash=loaded.fingerprint,
+            logger=logger,
+            db_engine=db_engine,
+            session_factory=session_factory,
+            redis_client=redis_client,
+            metrics=metrics,
+            rest_client=rest_client,
+            public_ws_client=public_ws_client,
+            private_ws_client=private_ws_client,
+            capture_service=capture_service,
+        )
+
+    async def run_capture(self, *, duration_seconds: int | None = None) -> None:
+        await self.capture_service.run(duration_seconds=duration_seconds)
+
+    async def shutdown(self) -> None:
+        try:
+            await self.rest_client.close()
+        finally:
+            try:
+                await self.redis_client.aclose()
+            finally:
+                await self.db_engine.dispose()
+                shutdown_logging()
+
+
+def build_capture_container(
+    bootstrap: BootstrapSettings | None = None,
+    *,
+    public_only: bool = False,
+) -> CaptureContainer:
+    return CaptureContainer.build(bootstrap, public_only=public_only)

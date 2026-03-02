@@ -30,6 +30,8 @@ Required environment variables:
 - `TB_LOG_LEVEL`
 - `TB_HTTP_HOST`
 - `TB_HTTP_PORT`
+- `TB_BYBIT_API_KEY` (required only when `exchange.private_state_enabled=true`)
+- `TB_BYBIT_API_SECRET` (required only when `exchange.private_state_enabled=true`)
 
 ## Local commands
 
@@ -39,6 +41,7 @@ uv run bot validate-config
 uv run bot doctor
 uv run bot db upgrade
 uv run bot run
+uv run bot capture --duration-seconds 30 --public-only
 ```
 
 ## IDE notes
@@ -60,5 +63,12 @@ The application exposes:
 
 ## Status
 
-This repository currently contains only the foundation layer. Exchange connectivity,
-strategy execution, paper trading, and LLM integration are intentionally deferred.
+This repository now contains the foundation layer plus phase-2 market-data capture:
+
+- Bybit V5 REST/WS clients for public data and read-only private state
+- normalized market/private events
+- Redis latest cache publishers
+- PostgreSQL persistence for instruments and account/private state
+- Parquet market archive writer
+
+Strategy execution, paper trading, live order placement, and LLM integration are intentionally deferred.

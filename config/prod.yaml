@@ -3,9 +3,13 @@ runtime:
 
 exchange:
   testnet: false
+  private_state_enabled: false
 
 observability:
   log_level: INFO
+
+storage:
+  market_archive_root: /var/lib/trading_bot/market_archive
 
 symbols:
   allowlist:

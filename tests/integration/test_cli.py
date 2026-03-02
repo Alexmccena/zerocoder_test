@@ -70,3 +70,29 @@ def test_db_upgrade_command_calls_alembic(monkeypatch) -> None:
     assert result.exit_code == 0
     assert called["revision"] == "head"
     assert called["dsn"] == "postgresql+asyncpg://user:pass@localhost:5432/app"
+
+
+def test_capture_command_uses_capture_container(monkeypatch) -> None:
+    apply_env(monkeypatch)
+    captured = {}
+
+    class FakeCaptureContainer:
+        async def run_capture(self, *, duration_seconds: int | None = None) -> None:
+            captured["duration_seconds"] = duration_seconds
+
+        async def shutdown(self) -> None:
+            captured["shutdown"] = True
+
+    def fake_build_capture_container(bootstrap, *, public_only: bool = False):
+        captured["public_only"] = public_only
+        captured["env"] = bootstrap.env.value
+        return FakeCaptureContainer()
+
+    monkeypatch.setattr("trading_bot.cli.build_capture_container", fake_build_capture_container)
+
+    result = runner.invoke(app, ["capture", "--duration-seconds", "3", "--public-only"])
+
+    assert result.exit_code == 0
+    assert captured["duration_seconds"] == 3
+    assert captured["public_only"] is True
+    assert captured["shutdown"] is True

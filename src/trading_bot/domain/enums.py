@@ -6,6 +6,7 @@ class RunMode(StrEnum):
     REPLAY = "replay"
     PAPER = "paper"
     LIVE = "live"
+    CAPTURE = "capture"
 
 
 class Environment(StrEnum):

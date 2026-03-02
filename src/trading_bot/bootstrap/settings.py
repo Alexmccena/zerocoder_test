@@ -28,6 +28,8 @@ class BootstrapSettings(BaseSettings):
     log_level: str = "INFO"
     http_host: str = "0.0.0.0"
     http_port: int = 8080
+    bybit_api_key: str | None = None
+    bybit_api_secret: str | None = None
 
     @property
     def resolved_config_file(self) -> Path:

@@ -47,6 +47,12 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
+def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(raw)
+    normalized.setdefault("config_version", 1)
+    return normalized
+
+
 def build_env_overrides(env_settings: BootstrapSettings) -> dict[str, Any]:
     return {
         "runtime": {"environment": env_settings.env.value},
@@ -62,6 +68,16 @@ def build_env_overrides(env_settings: BootstrapSettings) -> dict[str, Any]:
     }
 
 
+def validate_runtime_secrets(settings: AppSettings, env_settings: BootstrapSettings) -> None:
+    if settings.exchange.private_state_enabled and (
+        not env_settings.bybit_api_key or not env_settings.bybit_api_secret
+    ):
+        raise ConfigLoadError(
+            "TB_BYBIT_API_KEY and TB_BYBIT_API_SECRET are required when "
+            "exchange.private_state_enabled=true"
+        )
+
+
 def compute_config_hash(payload: AppSettings | dict[str, Any]) -> str:
     normalized = payload.model_dump(mode="json") if isinstance(payload, AppSettings) else payload
     encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -72,13 +88,20 @@ def load_app_config(
     env_settings: BootstrapSettings,
     *,
     base_file: Path | None = None,
+    overrides: dict[str, Any] | None = None,
 ) -> LoadedConfig:
     base_path = base_file or project_root() / "config" / "base.yaml"
     overlay_path = env_settings.resolved_config_file
-    merged = deep_merge(_read_yaml(base_path), _read_yaml(overlay_path))
+    merged = deep_merge(
+        normalize_config_document(_read_yaml(base_path)),
+        normalize_config_document(_read_yaml(overlay_path)),
+    )
     merged = deep_merge(merged, build_env_overrides(env_settings))
+    if overrides is not None:
+        merged = deep_merge(merged, overrides)
     try:
         app_settings = AppSettings.model_validate(merged)
     except ValidationError as exc:
         raise ConfigLoadError(f"Invalid application configuration: {exc}") from exc
+    validate_runtime_secrets(app_settings, env_settings)
     return LoadedConfig(settings=app_settings, fingerprint=compute_config_hash(app_settings))

@@ -1,7 +1,12 @@
+config_version: 1
+
 runtime:
   service_name: trading-bot
   mode: paper
   environment: dev
+  dry_run: false
+  replay_source: null
+  timezone: UTC
 
 exchange:
   primary: bybit
@@ -9,15 +14,38 @@ exchange:
   position_mode: one_way
   account_alias: default
   testnet: true
+  private_state_enabled: false
+  recv_window_ms: 5000
 
 symbols:
   allowlist:
     - BTCUSDT
     - ETHUSDT
 
+market_data:
+  orderbook_depth: 50
+  kline_intervals:
+    - 1
+    - 5
+    - 15
+  enable_trades: true
+  enable_ticker: true
+  enable_liquidations: true
+  enable_open_interest: true
+  enable_funding: true
+  bootstrap_kline_limit: 200
+  open_interest_poll_interval_seconds: 300
+  funding_poll_interval_seconds: 300
+  ws_reconnect_min_seconds: 1
+  ws_reconnect_max_seconds: 30
+
 storage:
   postgres_dsn: ""
   redis_dsn: ""
+  market_archive_root: data/market_archive
+  parquet_compression: zstd
+  parquet_flush_rows: 5000
+  parquet_flush_seconds: 5
 
 observability:
   log_level: INFO
