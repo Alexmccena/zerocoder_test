@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from redis.asyncio import Redis
@@ -15,6 +15,7 @@ from trading_bot.execution.engine import ExecutionEngine
 from trading_bot.marketdata.events import KlineEvent, MarketEvent
 from trading_bot.marketdata.snapshots import FeatureProvider, MarketSnapshotBuilder
 from trading_bot.observability.metrics import AppMetrics
+from trading_bot.runtime.reconciliation import RuntimeReconciler
 from trading_bot.runtime.reporting import build_runtime_summary
 from trading_bot.runtime.state import RuntimeStateStore
 from trading_bot.storage.redis import (
@@ -92,6 +93,8 @@ class RuntimeRunner:
         self.pnl_snapshots = pnl_snapshots
         self.strategy_start_at = strategy_start_at
         self._redis_degraded = False
+        self._reconciler = RuntimeReconciler(execution_engine=execution_engine)
+        self._last_reconciliation_at: datetime | None = None
 
     async def run(self, *, duration_seconds: int | None = None, summary_out: Path | None = None) -> dict[str, object]:
         self.metrics.record_runtime_run(self.config.runtime.mode.value)
@@ -122,7 +125,9 @@ class RuntimeRunner:
 
             initial_account = self.execution_engine.account_state()
             state.set_account(initial_account)
+            self._ensure_day_start_equity(state=state, as_of=initial_account.updated_at)
             await self.account_snapshots.create_paper_snapshot(run_session_id=run_session.id, account=initial_account)
+            state.sync_brackets(self.execution_engine.active_brackets())
             await self._publish_runtime_state(run_session.id, state)
 
             for event in await self.market_feed.prime(self.config.symbols.allowlist):
@@ -191,11 +196,26 @@ class RuntimeRunner:
         signals = 0
         orders_count = 0
         fills_count = 0
+        market_event_result = await self.execution_engine.on_market_event(symbol=event.symbol, snapshot=snapshot, as_of=event.event_ts)
+        orders_count += len(market_event_result.orders)
+        fills_count += len(market_event_result.fills)
         latest_pnl = await self._persist_execution_result(
             run_session_id=run_session_id,
             state=state,
-            result=await self.execution_engine.on_market_event(symbol=event.symbol, snapshot=snapshot, as_of=event.event_ts),
+            result=market_event_result,
         )
+        if self._should_reconcile(event.event_ts):
+            reconciliation_result = await self._reconciler.reconcile(state=state, as_of=event.event_ts)
+            orders_count += len(reconciliation_result.orders)
+            fills_count += len(reconciliation_result.fills)
+            persisted_pnl = await self._persist_execution_result(
+                run_session_id=run_session_id,
+                state=state,
+                result=reconciliation_result,
+            )
+            if persisted_pnl is not None:
+                latest_pnl = persisted_pnl
+            self._last_reconciliation_at = event.event_ts
         await self._publish_runtime_state(run_session_id, state)
 
         if not evaluate_strategy or not self._should_evaluate_strategy(event=event, snapshot=snapshot):
@@ -232,6 +252,7 @@ class RuntimeRunner:
 
             submitted = await self.execution_engine.submit(decision.execution_plan)
             orders_count += len(submitted.orders)
+            fills_count += len(submitted.fills)
             persisted_pnl = await self._persist_execution_result(
                 run_session_id=run_session_id,
                 state=state,
@@ -282,18 +303,28 @@ class RuntimeRunner:
         for fill in result.fills:
             fill.run_session_id = run_session_id
             await self.fills.insert_if_new(fill)
+        positions = [*result.positions]
         if result.position is not None:
-            if result.position.status == "open":
-                await self.positions.upsert_snapshot(run_session_id=run_session_id, position=result.position)
+            positions.append(result.position)
+        for position in positions:
+            if position.status == "open":
+                await self.positions.upsert_snapshot(run_session_id=run_session_id, position=position)
             else:
-                await self.positions.close_position(run_session_id=run_session_id, position=result.position)
-            state.update_position(result.position)
+                await self.positions.close_position(run_session_id=run_session_id, position=position)
+            self._update_loss_streak_state(state=state, position=position)
+            state.update_position(position)
         if result.account_state is not None:
             state.set_account(result.account_state)
+            self._ensure_day_start_equity(state=state, as_of=result.account_state.updated_at)
             await self.account_snapshots.create_paper_snapshot(run_session_id=run_session_id, account=result.account_state)
         if result.pnl_snapshot is not None:
             result.pnl_snapshot.run_session_id = run_session_id
             await self.pnl_snapshots.append(result.pnl_snapshot)
+        if result.payload.get("protection_failure"):
+            state.state.kill_switch_state.protection_failure_active = True
+            state.state.kill_switch_state.protection_failure_reason = result.payload.get("protection_failure_reason")
+            state.state.kill_switch_state.last_reason = result.payload.get("protection_failure_reason")
+        state.sync_brackets(self.execution_engine.active_brackets())
         return latest_pnl
 
     async def _publish_runtime_state(self, run_session_id: str, state: RuntimeStateStore) -> None:
@@ -341,3 +372,37 @@ class RuntimeRunner:
             and snapshot.orderbook is not None
             and self.config.strategy.default_timeframe in snapshot.closed_klines_by_interval
         )
+
+    def _should_reconcile(self, as_of: datetime) -> bool:
+        if self._last_reconciliation_at is None:
+            return True
+        cadence = timedelta(seconds=self.config.execution.reconciliation_interval_seconds)
+        return (as_of - self._last_reconciliation_at) >= cadence
+
+    def _ensure_day_start_equity(self, *, state: RuntimeStateStore, as_of: datetime) -> None:
+        account = state.state.account_state
+        if account is None:
+            return
+        day_key = as_of.astimezone(timezone.utc).date().isoformat()
+        state.state.day_start_equity_by_utc_date.setdefault(day_key, account.equity)
+
+    def _update_loss_streak_state(self, *, state: RuntimeStateStore, position) -> None:
+        previous_position = state.state.open_positions.get(position.symbol)
+        if previous_position is None or position.status == "open":
+            return
+
+        loss_state = state.state.loss_streak_state
+        kill_switch = state.state.kill_switch_state
+        closed_at = position.closed_at or position.updated_at
+        loss_state.last_closed_trade_pnl = position.realized_pnl
+
+        if position.realized_pnl < 0:
+            loss_state.consecutive_losses += 1
+            if loss_state.consecutive_losses >= self.config.risk.max_consecutive_losses:
+                cooldown_until = closed_at + timedelta(minutes=self.config.risk.cooldown_minutes_after_loss_streak)
+                loss_state.cooldown_until = cooldown_until
+                kill_switch.consecutive_loss_cooldown_until = cooldown_until
+        else:
+            loss_state.consecutive_losses = 0
+            loss_state.cooldown_until = None
+            kill_switch.consecutive_loss_cooldown_until = None

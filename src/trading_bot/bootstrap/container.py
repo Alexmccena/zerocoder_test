@@ -341,7 +341,7 @@ class RuntimeContainer:
         runtime_state = RuntimeStateStore(run_mode=mode, execution_venue=ExecutionVenueKind.PAPER)
         strategy = build_strategy(config=loaded.settings, runtime_state_provider=lambda: runtime_state.state)
         risk_engine = BasicRiskEngine(config=loaded.settings)
-        execution_engine = ExecutionEngine(venue=PaperVenue(config=loaded.settings, metrics=metrics))
+        execution_engine = ExecutionEngine(config=loaded.settings, venue=PaperVenue(config=loaded.settings, metrics=metrics))
         runtime_runner = RuntimeRunner(
             config=loaded.settings,
             config_hash=loaded.fingerprint,

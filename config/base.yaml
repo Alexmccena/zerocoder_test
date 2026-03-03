@@ -1,4 +1,4 @@
-config_version: 3
+config_version: 4
 
 runtime:
   service_name: trading-bot
@@ -59,6 +59,8 @@ strategy:
     signal_threshold_bps: 8
     min_imbalance: 0.10
     max_hold_closed_klines: 3
+    stop_loss_bps: 12
+    take_profit_rr: 1.5
   smc_scalper_v1:
     bias_timeframe: 15m
     structure_timeframe: 5m
@@ -111,6 +113,7 @@ strategy:
     exit:
       max_hold_bars: 10
       invalidation_buffer_bps: 2
+      take_profit_rr: 2.0
 
 risk:
   max_open_positions: 2
@@ -118,12 +121,19 @@ risk:
   max_daily_loss: 0.015
   stale_market_data_seconds: 2
   one_position_per_symbol: true
+  leverage_cap: 5
+  max_consecutive_losses: 3
+  cooldown_minutes_after_loss_streak: 30
+  funding_blackout_minutes_before: 5
+  funding_blackout_minutes_after: 5
 
 execution:
   default_entry_type: market
   limit_ttl_ms: 3000
   market_slippage_guard_bps: 10.0
   max_market_data_age_ms: 2000
+  reconciliation_interval_seconds: 5
+  flatten_on_protection_failure: true
 
 paper:
   initial_equity_usdt: 10000

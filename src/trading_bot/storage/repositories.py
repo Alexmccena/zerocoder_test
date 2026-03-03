@@ -190,8 +190,8 @@ class OrderRepository:
             "status": order.status,
             "quantity": order.quantity,
             "price": order.price,
-            "stop_price": None,
-            "reduce_only": False,
+            "stop_price": order.stop_price,
+            "reduce_only": order.reduce_only,
             "exchange_order_id": order.exchange_order_id,
             "client_order_id": order.client_order_id,
             "intent_id": order.intent_id,
@@ -224,6 +224,8 @@ class OrderRepository:
                         record.status = order.status
                         record.quantity = order.quantity
                         record.price = order.price
+                        record.stop_price = order.stop_price
+                        record.reduce_only = order.reduce_only
                         record.client_order_id = order.client_order_id
                         record.intent_id = order.intent_id
                         record.filled_quantity = order.filled_quantity
@@ -252,8 +254,8 @@ class OrderRepository:
             status=order.status,
             quantity=order.quantity,
             price=order.price,
-            stop_price=None,
-            reduce_only=False,
+            stop_price=order.stop_price,
+            reduce_only=order.reduce_only,
             exchange_order_id=order.exchange_order_id,
             client_order_id=order.client_order_id,
             intent_id=order.intent_id,
@@ -285,6 +287,8 @@ class OrderRepository:
             record.filled_quantity = order.filled_quantity
             record.average_price = order.average_price
             record.price = order.price
+            record.stop_price = order.stop_price
+            record.reduce_only = order.reduce_only
             record.expires_at = order.expires_at
             record.cancel_reason = order.cancel_reason
             record.payload_json = order.raw_payload

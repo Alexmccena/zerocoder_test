@@ -76,8 +76,8 @@ def _build_archive(root: Path) -> None:
                 "sequence": 3,
                 "update_id": 3,
                 "is_snapshot": False,
-                "bids": [{"price": "98.99", "size": "2"}],
-                "asks": [{"price": "99.00", "size": "6"}],
+                "bids": [{"price": "98.99", "size": "4"}],
+                "asks": [{"price": "99.00", "size": "4"}],
             },
         ],
     )
@@ -162,7 +162,7 @@ def _build_settings(source_root: Path) -> AppSettings:
                 "max_market_data_age_ms": 10_000,
             },
             "paper": {
-                "initial_equity_usdt": "10000",
+                "initial_equity_usdt": "10",
                 "default_order_notional_usdt": "100",
                 "fill_latency_ms": 0,
             },
@@ -221,7 +221,7 @@ def _build_smc_settings(source_root: Path) -> AppSettings:
                 "max_market_data_age_ms": 10_000,
             },
             "paper": {
-                "initial_equity_usdt": "10000",
+                "initial_equity_usdt": "10",
                 "default_order_notional_usdt": "100",
                 "fill_latency_ms": 0,
             },
@@ -442,7 +442,7 @@ async def test_runtime_runner_backtest_e2e_with_replay_archive(tmp_path: Path) -
     feature_provider = FeatureProvider(timeframe=settings.strategy.default_timeframe)
     strategy = Phase3PlaceholderStrategy(config=settings, runtime_state_provider=lambda: state_store.state)
     risk_engine = BasicRiskEngine(config=settings)
-    execution_engine = ExecutionEngine(venue=PaperVenue(config=settings, metrics=AppMetrics()))
+    execution_engine = ExecutionEngine(config=settings, venue=PaperVenue(config=settings, metrics=AppMetrics()))
 
     run_sessions = InMemoryRunSessions()
     config_snapshots = InMemoryConfigSnapshots()
@@ -491,10 +491,18 @@ async def test_runtime_runner_backtest_e2e_with_replay_archive(tmp_path: Path) -
     assert config_snapshots.items[0]["config_hash"] == "test-config-hash"
     assert len(instruments.items) == 1
 
-    assert [item["signal_type"] for item in signal_events.items] == ["open_long", "close_long"]
-    assert [item["decision"] for item in risk_decisions.items] == ["allow", "allow"]
+    assert [item["signal_type"] for item in signal_events.items] == ["open_long"]
+    assert [item["decision"] for item in risk_decisions.items] == ["allow"]
 
-    assert len(orders.history) == 4
+    assert len(orders.history) == 6
+    assert [order.raw_payload.get("order_role") for order in orders.history] == [
+        "entry",
+        "entry",
+        "stop_loss",
+        "take_profit",
+        "stop_loss",
+        "take_profit",
+    ]
     assert len(fills.items) == 2
     assert [fill.side for fill in fills.items] == ["buy", "sell"]
 
@@ -502,13 +510,14 @@ async def test_runtime_runner_backtest_e2e_with_replay_archive(tmp_path: Path) -
     assert positions.history[0].status == "open"
     assert positions.history[1].status == "closed"
     assert state_store.state.open_positions == {}
+    assert state_store.state.active_brackets_by_symbol == {}
 
     assert len(account_snapshots.items) >= 3
     assert len(pnl_snapshots.items) >= 2
     assert account_snapshots.items[-1].equity == state_store.state.account_state.equity
     assert pnl_snapshots.items[-1].equity == state_store.state.account_state.equity
-    assert summary["total_signals"] == 2
-    assert summary["total_orders"] == 4
+    assert summary["total_signals"] == 1
+    assert summary["total_orders"] == 6
     assert summary["total_fills"] == 2
     assert float(summary["final_equity"]) < float(summary["initial_equity"])
 
@@ -537,7 +546,7 @@ async def test_runtime_runner_backtest_e2e_with_smc_sample_archive(tmp_path: Pat
     feature_provider = FeatureProvider(config=settings)
     strategy = SmcScalperV1Strategy(config=settings, runtime_state_provider=lambda: state_store.state)
     risk_engine = BasicRiskEngine(config=settings)
-    execution_engine = ExecutionEngine(venue=PaperVenue(config=settings, metrics=AppMetrics()))
+    execution_engine = ExecutionEngine(config=settings, venue=PaperVenue(config=settings, metrics=AppMetrics()))
 
     run_sessions = InMemoryRunSessions()
     config_snapshots = InMemoryConfigSnapshots()
@@ -591,17 +600,29 @@ async def test_runtime_runner_backtest_e2e_with_smc_sample_archive(tmp_path: Pat
     assert signal_events.items[0]["payload_json"]["selected_setup"]["side"] == "long"
     assert "confirmations_ok" in signal_events.items[0]["payload_json"]["rule_trace"]
 
-    assert len(orders.history) == 4
+    assert len(orders.history) == 8
+    assert [order.raw_payload.get("order_role") for order in orders.history] == [
+        "entry",
+        "entry",
+        "stop_loss",
+        "take_profit",
+        "stop_loss",
+        "take_profit",
+        None,
+        None,
+    ]
     assert len(fills.items) == 2
     assert [fill.side for fill in fills.items] == ["buy", "sell"]
 
     assert len(positions.history) == 2
     assert positions.history[0].status == "open"
     assert positions.history[1].status == "closed"
+    assert positions.history[1].closed_reason == "max_hold"
     assert state_store.state.open_positions == {}
+    assert state_store.state.active_brackets_by_symbol == {}
 
     assert summary["total_signals"] == 2
-    assert summary["total_orders"] == 4
+    assert summary["total_orders"] == 8
     assert summary["total_fills"] == 2
     assert summary_out.exists()
     assert json.loads(summary_out.read_text(encoding="utf-8")) == summary

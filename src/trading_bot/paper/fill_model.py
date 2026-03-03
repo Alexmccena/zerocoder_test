@@ -126,6 +126,22 @@ class PaperFillModel:
             )
         )
 
+    def simulate_stop_market_fill(self, *, order: OrderState, snapshot: MarketSnapshot, as_of: datetime) -> FillAttempt:
+        if order.stop_price is None or snapshot.orderbook is None:
+            return FillAttempt(fill=None)
+        if self._is_stale(snapshot, as_of):
+            return FillAttempt(fill=None, reason="stale_market_data")
+
+        best_bid = snapshot.orderbook.bids[0].price if snapshot.orderbook.bids else None
+        best_ask = snapshot.orderbook.asks[0].price if snapshot.orderbook.asks else None
+        if order.side == "sell":
+            triggered = best_bid is not None and best_bid <= order.stop_price
+        else:
+            triggered = best_ask is not None and best_ask >= order.stop_price
+        if not triggered:
+            return FillAttempt(fill=None)
+        return self.simulate_market_fill(order=order, snapshot=snapshot, as_of=as_of)
+
     def _is_stale(self, snapshot: MarketSnapshot, as_of: datetime) -> bool:
         orderbook = snapshot.orderbook
         if orderbook is None:

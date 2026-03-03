@@ -178,7 +178,7 @@ def test_private_state_requires_bybit_credentials(tmp_path: Path) -> None:
     assert loaded.settings.runtime.mode.value == "paper"
 
 
-def test_strategy_flat_placeholder_fields_are_normalized_to_v3_shape(tmp_path: Path) -> None:
+def test_strategy_flat_placeholder_fields_are_normalized_to_v4_shape(tmp_path: Path) -> None:
     base = tmp_path / "base.yaml"
     overlay = tmp_path / "dev.yaml"
     base.write_text(
@@ -207,7 +207,7 @@ def test_strategy_flat_placeholder_fields_are_normalized_to_v3_shape(tmp_path: P
 
     loaded = load_app_config(settings, base_file=base)
 
-    assert loaded.settings.config_version == 3
+    assert loaded.settings.config_version == 4
     assert loaded.settings.strategy.placeholder.signal_threshold_bps == 11
 
 

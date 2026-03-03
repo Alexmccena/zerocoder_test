@@ -100,6 +100,8 @@ class OrderState(DomainModel):
     status: str
     quantity: Decimal
     price: Decimal | None = None
+    stop_price: Decimal | None = None
+    reduce_only: bool = False
     filled_quantity: Decimal = Decimal("0")
     average_price: Decimal | None = None
     exchange_order_id: str | None = None
@@ -170,9 +172,11 @@ class TradeIntent(DomainModel):
     symbol: str
     side: str
     entry_type: EntryType = EntryType.MARKET
-    quantity: Decimal
+    quantity: Decimal | None = None
     reference_price: Decimal
     limit_price: Decimal | None = None
+    stop_loss_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
     ttl_ms: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     generated_at: datetime = Field(default_factory=utc_now)
@@ -341,6 +345,43 @@ class FeatureSnapshot(DomainModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class KillSwitchState(DomainModel):
+    daily_loss_breached_until: datetime | None = None
+    consecutive_loss_cooldown_until: datetime | None = None
+    protection_failure_active: bool = False
+    protection_failure_reason: str | None = None
+    last_reason: str | None = None
+
+
+class LossStreakState(DomainModel):
+    consecutive_losses: int = 0
+    last_closed_trade_pnl: Decimal | None = None
+    cooldown_until: datetime | None = None
+
+
+class BracketState(DomainModel):
+    symbol: str
+    intent_id: str
+    side: str
+    quantity: Decimal
+    stop_loss_price: Decimal
+    take_profit_price: Decimal
+    entry_order_id: str | None = None
+    stop_loss_order_id: str | None = None
+    take_profit_order_id: str | None = None
+    status: str = "pending_entry"
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class VenueStateSnapshot(DomainModel):
+    account_state: AccountState | None = None
+    open_orders: list[OrderState] = Field(default_factory=list)
+    open_positions: list[PositionState] = Field(default_factory=list)
+    as_of: datetime = Field(default_factory=utc_now)
+
+
 class PnlSnapshot(DomainModel):
     run_session_id: str | None = None
     execution_venue: ExecutionVenueKind = ExecutionVenueKind.PAPER
@@ -358,9 +399,11 @@ class ExecutionResult(DomainModel):
     orders: list[OrderState] = Field(default_factory=list)
     fills: list[FillState] = Field(default_factory=list)
     position: PositionState | None = None
+    positions: list[PositionState] = Field(default_factory=list)
     account_state: AccountState | None = None
     pnl_snapshot: PnlSnapshot | None = None
     reason: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class RuntimeState(DomainModel):
@@ -371,6 +414,10 @@ class RuntimeState(DomainModel):
     open_orders: dict[str, OrderState] = Field(default_factory=dict)
     open_positions: dict[str, PositionState] = Field(default_factory=dict)
     market_state_by_symbol: dict[str, MarketSnapshot] = Field(default_factory=dict)
+    kill_switch_state: KillSwitchState = Field(default_factory=KillSwitchState)
+    loss_streak_state: LossStreakState = Field(default_factory=LossStreakState)
+    active_brackets_by_symbol: dict[str, BracketState] = Field(default_factory=dict)
+    day_start_equity_by_utc_date: dict[str, Decimal] = Field(default_factory=dict)
     started_at: datetime = Field(default_factory=utc_now)
 
 

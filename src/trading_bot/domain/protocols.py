@@ -13,12 +13,13 @@ from trading_bot.domain.models import (
     FeatureSnapshot,
     Instrument,
     MarketSnapshot,
-    RuntimeState,
     OrderIntent,
     OrderState,
     PositionState,
     RiskDecision,
+    RuntimeState,
     TradeIntent,
+    VenueStateSnapshot,
 )
 from trading_bot.marketdata.events import MarketEvent, PrivateStateEvent
 
@@ -45,6 +46,10 @@ class ExecutionVenue(Protocol):
     async def submit(self, plan: ExecutionPlan) -> ExecutionResult: ...
 
     async def process_market_event(self, symbol: str, snapshot: MarketSnapshot, as_of: datetime) -> ExecutionResult: ...
+
+    async def cancel_order(self, order_id: str, *, as_of: datetime) -> ExecutionResult: ...
+
+    async def snapshot_state(self) -> VenueStateSnapshot: ...
 
     async def sync_positions(self) -> list[PositionState]: ...
 

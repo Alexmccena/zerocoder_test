@@ -9,6 +9,13 @@ from trading_bot.domain.enums import EntryType, TradeAction
 from trading_bot.domain.models import FeatureSnapshot, MarketSnapshot, RuntimeState, TradeIntent
 
 
+def _apply_bps(price: Decimal, bps: float, *, direction: str) -> Decimal:
+    multiplier = Decimal(str(bps)) / Decimal("10000")
+    if direction == "up":
+        return price * (Decimal("1") + multiplier)
+    return price * (Decimal("1") - multiplier)
+
+
 class Phase3PlaceholderStrategy:
     def __init__(self, *, config: AppSettings, runtime_state_provider: Callable[[], RuntimeState]) -> None:
         self.config = config
@@ -67,18 +74,20 @@ class Phase3PlaceholderStrategy:
 
     def _build_open_intent(self, *, snapshot: MarketSnapshot, action: TradeAction) -> TradeIntent:
         reference_price = self._reference_price(snapshot)
-        quantity = self.config.paper.default_order_notional_usdt / reference_price
         side = "buy" if action == TradeAction.OPEN_LONG else "sell"
         entry_type = self.config.execution.default_entry_type
+        stop_loss_price, take_profit_price = self._protective_levels(reference_price=reference_price, action=action)
         return TradeIntent(
             strategy_name=self.config.strategy.name,
             action=action,
             symbol=snapshot.symbol,
             side=side,
             entry_type=entry_type,
-            quantity=quantity,
+            quantity=None,
             reference_price=reference_price,
             limit_price=self._limit_price(snapshot, side=side, entry_type=entry_type),
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             ttl_ms=self.config.execution.limit_ttl_ms,
             metadata={},
             generated_at=snapshot.as_of,
@@ -104,6 +113,8 @@ class Phase3PlaceholderStrategy:
             quantity=quantity,
             reference_price=self._reference_price(snapshot),
             limit_price=self._limit_price(snapshot, side=side, entry_type=entry_type),
+            stop_loss_price=None,
+            take_profit_price=None,
             ttl_ms=self.config.execution.limit_ttl_ms,
             metadata={"close_reason": reason},
             generated_at=snapshot.as_of,
@@ -127,3 +138,15 @@ class Phase3PlaceholderStrategy:
         if side == "sell" and snapshot.orderbook.asks:
             return snapshot.orderbook.asks[0].price
         return self._reference_price(snapshot)
+
+    def _protective_levels(self, *, reference_price: Decimal, action: TradeAction) -> tuple[Decimal, Decimal]:
+        stop_loss_bps = self.config.strategy.placeholder.stop_loss_bps
+        take_profit_rr = Decimal(str(self.config.strategy.placeholder.take_profit_rr))
+        if action == TradeAction.OPEN_LONG:
+            stop_loss_price = _apply_bps(reference_price, stop_loss_bps, direction="down")
+            take_profit_price = reference_price + (take_profit_rr * (reference_price - stop_loss_price))
+            return stop_loss_price, take_profit_price
+
+        stop_loss_price = _apply_bps(reference_price, stop_loss_bps, direction="up")
+        take_profit_price = reference_price - (take_profit_rr * (stop_loss_price - reference_price))
+        return stop_loss_price, take_profit_price

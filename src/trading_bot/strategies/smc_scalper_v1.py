@@ -268,17 +268,25 @@ class SmcScalperV1Strategy:
 
     def _build_open_intent(self, *, snapshot: MarketSnapshot, setup: dict[str, object]) -> TradeIntent:
         reference_price = self._reference_price(snapshot)
-        quantity = self.config.paper.default_order_notional_usdt / reference_price
         action = TradeAction.OPEN_LONG if setup["side"] == "long" else TradeAction.OPEN_SHORT
         side = "buy" if action == TradeAction.OPEN_LONG else "sell"
+        stop_loss_price = Decimal(str(setup["invalidation_price"]))
+        take_profit_rr = Decimal(str(self.config.strategy.smc_scalper_v1.exit.take_profit_rr))
+        stop_distance = abs(reference_price - stop_loss_price)
+        if action == TradeAction.OPEN_LONG:
+            take_profit_price = reference_price + (take_profit_rr * stop_distance)
+        else:
+            take_profit_price = reference_price - (take_profit_rr * stop_distance)
         return TradeIntent(
             strategy_name=self.config.strategy.name,
             action=action,
             symbol=snapshot.symbol,
             side=side,
             entry_type=EntryType.MARKET,
-            quantity=quantity,
+            quantity=None,
             reference_price=reference_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             ttl_ms=self.config.execution.limit_ttl_ms,
             metadata={
                 "setup_side": setup["side"],
@@ -312,6 +320,8 @@ class SmcScalperV1Strategy:
             entry_type=EntryType.MARKET,
             quantity=quantity,
             reference_price=self._reference_price(snapshot),
+            stop_loss_price=None,
+            take_profit_price=None,
             ttl_ms=self.config.execution.limit_ttl_ms,
             metadata={"close_reason": reason},
             generated_at=snapshot.as_of,

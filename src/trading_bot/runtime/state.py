@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from trading_bot.domain.enums import ExecutionVenueKind, RunMode
-from trading_bot.domain.models import AccountState, MarketSnapshot, OrderState, PositionState, RuntimeState
+from trading_bot.domain.models import AccountState, BracketState, MarketSnapshot, OrderState, PositionState, RuntimeState
 
 
 class RuntimeStateStore:
@@ -28,3 +28,6 @@ class RuntimeStateStore:
 
     def update_snapshot(self, snapshot: MarketSnapshot) -> None:
         self.state.market_state_by_symbol[snapshot.symbol] = snapshot
+
+    def sync_brackets(self, brackets: dict[str, BracketState]) -> None:
+        self.state.active_brackets_by_symbol = {symbol: bracket.model_copy(deep=True) for symbol, bracket in brackets.items()}

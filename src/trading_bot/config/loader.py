@@ -56,6 +56,8 @@ def _default_strategy_document() -> dict[str, Any]:
             "signal_threshold_bps": 8.0,
             "min_imbalance": 0.10,
             "max_hold_closed_klines": 3,
+            "stop_loss_bps": 12.0,
+            "take_profit_rr": 1.5,
         },
         "smc_scalper_v1": {
             "bias_timeframe": "15m",
@@ -120,6 +122,7 @@ def _default_strategy_document() -> dict[str, Any]:
             "exit": {
                 "max_hold_bars": 10,
                 "invalidation_buffer_bps": 2.0,
+                "take_profit_rr": 2.0,
             },
         },
     }
@@ -154,12 +157,14 @@ def _normalize_strategy_document(raw: dict[str, Any] | None) -> dict[str, Any]:
 def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
     normalized = deep_merge(
         {
-            "config_version": 3,
+            "config_version": 4,
             "execution": {
                 "default_entry_type": "market",
                 "limit_ttl_ms": 3000,
                 "market_slippage_guard_bps": 10.0,
                 "max_market_data_age_ms": 2000,
+                "reconciliation_interval_seconds": 5,
+                "flatten_on_protection_failure": True,
             },
             "paper": {
                 "initial_equity_usdt": "10000",
@@ -183,11 +188,16 @@ def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
             "risk": {
                 "stale_market_data_seconds": 2,
                 "one_position_per_symbol": True,
+                "leverage_cap": "5",
+                "max_consecutive_losses": 3,
+                "cooldown_minutes_after_loss_streak": 30,
+                "funding_blackout_minutes_before": 5,
+                "funding_blackout_minutes_after": 5,
             },
         },
         raw,
     )
-    normalized["config_version"] = max(int(normalized.get("config_version", 1)), 3)
+    normalized["config_version"] = max(int(normalized.get("config_version", 1)), 4)
     normalized["strategy"] = _normalize_strategy_document(normalized.get("strategy"))
     replay = normalized.setdefault("replay", {})
     if replay.get("source_root") is None:

@@ -77,6 +77,8 @@ class PlaceholderStrategyConfig(ConfigModel):
     signal_threshold_bps: float = Field(default=8.0, ge=0)
     min_imbalance: float = Field(default=0.10, ge=0)
     max_hold_closed_klines: int = Field(default=3, ge=1)
+    stop_loss_bps: float = Field(default=12.0, ge=0)
+    take_profit_rr: float = Field(default=1.5, gt=0)
 
 
 class SmcHistoryConfig(ConfigModel):
@@ -149,6 +151,7 @@ class SmcEntryConfig(ConfigModel):
 class SmcExitConfig(ConfigModel):
     max_hold_bars: int = Field(default=10, ge=1)
     invalidation_buffer_bps: float = Field(default=2.0, ge=0)
+    take_profit_rr: float = Field(default=2.0, gt=0)
 
 
 class SmcScalperV1Config(ConfigModel):
@@ -229,6 +232,11 @@ class RiskDefaultsConfig(ConfigModel):
     max_daily_loss: float = Field(gt=0)
     stale_market_data_seconds: int = Field(default=2, ge=1)
     one_position_per_symbol: bool = True
+    leverage_cap: Decimal = Field(default=Decimal("5"), gt=0)
+    max_consecutive_losses: int = Field(default=3, ge=1)
+    cooldown_minutes_after_loss_streak: int = Field(default=30, ge=0)
+    funding_blackout_minutes_before: int = Field(default=5, ge=0)
+    funding_blackout_minutes_after: int = Field(default=5, ge=0)
 
 
 class ExecutionConfig(ConfigModel):
@@ -236,6 +244,8 @@ class ExecutionConfig(ConfigModel):
     limit_ttl_ms: int = Field(default=3000, ge=1)
     market_slippage_guard_bps: float = Field(default=10.0, ge=0)
     max_market_data_age_ms: int = Field(default=2000, ge=1)
+    reconciliation_interval_seconds: int = Field(default=5, ge=1)
+    flatten_on_protection_failure: bool = True
 
 
 class PaperConfig(ConfigModel):
@@ -272,7 +282,7 @@ class LLMConfig(ConfigModel):
 
 
 class AppSettings(ConfigModel):
-    config_version: int = Field(default=3, ge=1)
+    config_version: int = Field(default=4, ge=1)
     runtime: RuntimeConfig
     exchange: ExchangeConfig
     symbols: SymbolsConfig
