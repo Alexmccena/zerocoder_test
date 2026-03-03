@@ -2,11 +2,11 @@
 
 Russian overview: [readme_rus.md](readme_rus.md)
 
-Foundation slice for a future multi-exchange trading bot. This phase provides:
+Foundation slice for a future multi-exchange trading bot. The repository now includes:
 
 - `uv`-managed Python project with `src/` layout
 - FastAPI shell for `/health`, `/ready`, `/metrics`
-- Typer CLI
+- Typer CLI with `serve`, `capture`, `run`, `replay`, and `backtest`
 - Postgres and Redis integration points
 - SQLAlchemy and Alembic foundation
 - Pydantic configuration loading from YAML and environment variables
@@ -40,8 +40,11 @@ uv sync
 uv run bot validate-config
 uv run bot doctor
 uv run bot db upgrade
-uv run bot run
+uv run bot serve
 uv run bot capture --duration-seconds 30 --public-only
+uv run bot run --mode paper --duration-seconds 30
+uv run bot replay --source data/market_archive --speed 10
+uv run bot backtest --source data/market_archive
 ```
 
 ## IDE notes
@@ -63,12 +66,13 @@ The application exposes:
 
 ## Status
 
-This repository now contains the foundation layer plus phase-2 market-data capture:
+This repository now contains the foundation layer, phase-2 market-data capture, and the phase-3 simulated runtime:
 
 - Bybit V5 REST/WS clients for public data and read-only private state
 - normalized market/private events
 - Redis latest cache publishers
 - PostgreSQL persistence for instruments and account/private state
 - Parquet market archive writer
+- phase-3 paper venue, replay reader, and shared backtest runtime
 
-Strategy execution, paper trading, live order placement, and LLM integration are intentionally deferred.
+Live Bybit execution, production strategy logic, and LLM integration are intentionally deferred.

@@ -1,4 +1,4 @@
-config_version: 1
+config_version: 2
 
 runtime:
   service_name: trading-bot
@@ -53,13 +53,42 @@ observability:
   http_port: 8080
 
 strategy:
-  name: foundation_placeholder
+  name: phase3_placeholder
   default_timeframe: 1m
+  placeholder_signal_threshold_bps: 8
+  placeholder_min_imbalance: 0.10
+  placeholder_max_hold_closed_klines: 3
 
 risk:
   max_open_positions: 2
   risk_per_trade: 0.0025
   max_daily_loss: 0.015
+  stale_market_data_seconds: 2
+  one_position_per_symbol: true
+
+execution:
+  default_entry_type: market
+  limit_ttl_ms: 3000
+  market_slippage_guard_bps: 10.0
+  max_market_data_age_ms: 2000
+
+paper:
+  initial_equity_usdt: 10000
+  default_order_notional_usdt: 100
+  maker_fee_bps: 2.0
+  taker_fee_bps: 5.5
+  fill_latency_ms: 150
+  limit_fill_visible_ratio: 0.25
+  allow_partial_limit_fills: true
+
+replay:
+  source_root: null
+  start_at: null
+  end_at: null
+  speed: 1.0
+  warmup_minutes: 15
+  fail_on_gap: true
+  max_gap_seconds: 30
 
 llm:
   enabled: false

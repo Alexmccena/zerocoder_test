@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from collections.abc import AsyncIterator, Sequence
 from typing import Protocol, runtime_checkable
 
@@ -12,6 +13,7 @@ from trading_bot.domain.models import (
     FeatureSnapshot,
     Instrument,
     MarketSnapshot,
+    RuntimeState,
     OrderIntent,
     OrderState,
     PositionState,
@@ -42,7 +44,11 @@ class ExchangeAdapter(Protocol):
 class ExecutionVenue(Protocol):
     async def submit(self, plan: ExecutionPlan) -> ExecutionResult: ...
 
+    async def process_market_event(self, symbol: str, snapshot: MarketSnapshot, as_of: datetime) -> ExecutionResult: ...
+
     async def sync_positions(self) -> list[PositionState]: ...
+
+    def account_state(self) -> AccountState: ...
 
 
 @runtime_checkable
@@ -52,7 +58,7 @@ class Strategy(Protocol):
 
 @runtime_checkable
 class RiskEngine(Protocol):
-    async def assess(self, intent: TradeIntent, account_state: AccountState) -> RiskDecision: ...
+    async def assess(self, intent: TradeIntent, state: RuntimeState, snapshot: MarketSnapshot) -> RiskDecision: ...
 
 
 @runtime_checkable
@@ -82,3 +88,21 @@ class PrivateStateSource(Protocol):
     async def list_open_positions(self) -> list[PositionState]: ...
 
     async def stream_private_events(self) -> AsyncIterator[PrivateStateEvent]: ...
+
+
+@runtime_checkable
+class MarketEventFeed(Protocol):
+    async def fetch_instruments(self, symbols: Sequence[str]) -> list[Instrument]: ...
+
+    async def prime(self, symbols: Sequence[str]) -> list[MarketEvent]: ...
+
+    async def stream(self, symbols: Sequence[str]) -> AsyncIterator[MarketEvent]: ...
+
+    async def close(self) -> None: ...
+
+
+@runtime_checkable
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+    async def sleep_until(self, dt: datetime) -> None: ...

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 
 
 class AppMetrics:
@@ -96,6 +96,73 @@ class AppMetrics:
             "Number of Redis latest-cache publish failures.",
             registry=self.registry,
         )
+        self.runtime_runs_total = Counter(
+            "tb_runtime_runs_total",
+            "Number of simulated/runtime runs.",
+            ["run_mode"],
+            registry=self.registry,
+        )
+        self.strategy_intents_total = Counter(
+            "tb_strategy_intents_total",
+            "Number of generated strategy intents.",
+            ["strategy_name", "action"],
+            registry=self.registry,
+        )
+        self.risk_decisions_total = Counter(
+            "tb_risk_decisions_total",
+            "Number of risk decisions.",
+            ["decision"],
+            registry=self.registry,
+        )
+        self.execution_plans_total = Counter(
+            "tb_execution_plans_total",
+            "Number of execution plans submitted to a venue.",
+            ["venue"],
+            registry=self.registry,
+        )
+        self.paper_orders_total = Counter(
+            "tb_paper_orders_total",
+            "Number of paper orders by status and type.",
+            ["status", "order_type"],
+            registry=self.registry,
+        )
+        self.paper_fills_total = Counter(
+            "tb_paper_fills_total",
+            "Number of paper fills by liquidity type.",
+            ["liquidity_type"],
+            registry=self.registry,
+        )
+        self.paper_fill_latency_seconds = Histogram(
+            "tb_paper_fill_latency_seconds",
+            "Latency between order submit and simulated fill.",
+            registry=self.registry,
+        )
+        self.paper_realized_pnl = Gauge(
+            "tb_paper_realized_pnl",
+            "Latest paper realized PnL.",
+            registry=self.registry,
+        )
+        self.paper_unrealized_pnl = Gauge(
+            "tb_paper_unrealized_pnl",
+            "Latest paper unrealized PnL.",
+            registry=self.registry,
+        )
+        self.replay_events_total = Counter(
+            "tb_replay_events_total",
+            "Number of replay/backtest events processed.",
+            ["event_type"],
+            registry=self.registry,
+        )
+        self.backtest_duration_seconds = Histogram(
+            "tb_backtest_duration_seconds",
+            "Backtest wall-clock duration.",
+            registry=self.registry,
+        )
+        self.backtest_max_drawdown = Gauge(
+            "tb_backtest_max_drawdown",
+            "Latest backtest max drawdown.",
+            registry=self.registry,
+        )
 
     def record_app_start(self) -> None:
         self.app_start_total.inc()
@@ -144,6 +211,40 @@ class AppMetrics:
 
     def record_redis_publish_failure(self) -> None:
         self.redis_publish_fail_total.inc()
+
+    def record_runtime_run(self, run_mode: str) -> None:
+        self.runtime_runs_total.labels(run_mode=run_mode).inc()
+
+    def record_strategy_intent(self, strategy_name: str, action: str) -> None:
+        self.strategy_intents_total.labels(strategy_name=strategy_name, action=action).inc()
+
+    def record_risk_decision(self, decision: str) -> None:
+        self.risk_decisions_total.labels(decision=decision).inc()
+
+    def record_execution_plan(self, venue: str) -> None:
+        self.execution_plans_total.labels(venue=venue).inc()
+
+    def record_paper_order(self, status: str, order_type: str) -> None:
+        self.paper_orders_total.labels(status=status, order_type=order_type).inc()
+
+    def record_paper_fill(self, liquidity_type: str, latency_seconds: float) -> None:
+        self.paper_fills_total.labels(liquidity_type=liquidity_type).inc()
+        self.paper_fill_latency_seconds.observe(latency_seconds)
+
+    def set_paper_realized_pnl(self, value: float) -> None:
+        self.paper_realized_pnl.set(value)
+
+    def set_paper_unrealized_pnl(self, value: float) -> None:
+        self.paper_unrealized_pnl.set(value)
+
+    def record_replay_event(self, event_type: str) -> None:
+        self.replay_events_total.labels(event_type=event_type).inc()
+
+    def record_backtest_duration(self, seconds: float) -> None:
+        self.backtest_duration_seconds.observe(seconds)
+
+    def set_backtest_max_drawdown(self, value: float) -> None:
+        self.backtest_max_drawdown.set(value)
 
     def render(self) -> bytes:
         return generate_latest(self.registry)

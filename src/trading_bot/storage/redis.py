@@ -49,3 +49,29 @@ async def publish_market_latest_interval(
 
 async def publish_private_state(client: Redis, *, name: str, payload: dict[str, Any]) -> None:
     await set_json(client, f"tb:state:latest:{name}", payload)
+
+
+async def publish_runtime_status(client: Redis, *, run_session_id: str, payload: dict[str, Any]) -> None:
+    await set_json(client, f"tb:runtime:{run_session_id}:status", payload)
+
+
+async def publish_runtime_account(client: Redis, *, run_session_id: str, payload: dict[str, Any]) -> None:
+    await set_json(client, f"tb:runtime:{run_session_id}:account", payload)
+
+
+async def publish_runtime_positions(client: Redis, *, run_session_id: str, payload: dict[str, Any]) -> None:
+    await set_json(client, f"tb:runtime:{run_session_id}:positions", payload)
+
+
+async def publish_runtime_open_orders(client: Redis, *, run_session_id: str, payload: dict[str, Any]) -> None:
+    await set_json(client, f"tb:runtime:{run_session_id}:open_orders", payload)
+
+
+async def publish_runtime_snapshot(
+    client: Redis,
+    *,
+    run_session_id: str,
+    symbol: str,
+    payload: dict[str, Any],
+) -> None:
+    await set_json(client, f"tb:runtime:{run_session_id}:snapshot:{symbol}", payload)

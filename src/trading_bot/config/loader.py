@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from trading_bot.bootstrap.settings import BootstrapSettings, project_root
 from trading_bot.config.schema import AppSettings
+from trading_bot.domain.enums import RunMode
 
 
 class ConfigLoadError(RuntimeError):
@@ -48,8 +49,54 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 
 def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(raw)
-    normalized.setdefault("config_version", 1)
+    normalized = deep_merge(
+        {
+            "config_version": 2,
+            "execution": {
+                "default_entry_type": "market",
+                "limit_ttl_ms": 3000,
+                "market_slippage_guard_bps": 10.0,
+                "max_market_data_age_ms": 2000,
+            },
+            "paper": {
+                "initial_equity_usdt": "10000",
+                "default_order_notional_usdt": "100",
+                "maker_fee_bps": 2.0,
+                "taker_fee_bps": 5.5,
+                "fill_latency_ms": 150,
+                "limit_fill_visible_ratio": 0.25,
+                "allow_partial_limit_fills": True,
+            },
+            "replay": {
+                "source_root": None,
+                "start_at": None,
+                "end_at": None,
+                "speed": 1.0,
+                "warmup_minutes": 15,
+                "fail_on_gap": True,
+                "max_gap_seconds": 30,
+            },
+            "strategy": {
+                "name": "phase3_placeholder",
+                "default_timeframe": "1m",
+                "placeholder_signal_threshold_bps": 8.0,
+                "placeholder_min_imbalance": 0.10,
+                "placeholder_max_hold_closed_klines": 3,
+            },
+            "risk": {
+                "stale_market_data_seconds": 2,
+                "one_position_per_symbol": True,
+            },
+        },
+        raw,
+    )
+    if normalized.get("config_version", 1) < 2:
+        normalized["config_version"] = 2
+    replay = normalized.setdefault("replay", {})
+    if replay.get("source_root") is None:
+        alias = normalized.get("runtime", {}).get("replay_source")
+        if alias is not None:
+            replay["source_root"] = alias
     return normalized
 
 
@@ -69,7 +116,7 @@ def build_env_overrides(env_settings: BootstrapSettings) -> dict[str, Any]:
 
 
 def validate_runtime_secrets(settings: AppSettings, env_settings: BootstrapSettings) -> None:
-    if settings.exchange.private_state_enabled and (
+    if settings.runtime.mode in {RunMode.CAPTURE, RunMode.LIVE} and settings.exchange.private_state_enabled and (
         not env_settings.bybit_api_key or not env_settings.bybit_api_secret
     ):
         raise ConfigLoadError(
@@ -103,5 +150,7 @@ def load_app_config(
         app_settings = AppSettings.model_validate(merged)
     except ValidationError as exc:
         raise ConfigLoadError(f"Invalid application configuration: {exc}") from exc
+    if app_settings.runtime.mode in {RunMode.REPLAY, RunMode.BACKTEST} and not app_settings.replay.source_root:
+        raise ConfigLoadError("replay.source_root is required when runtime.mode is replay or backtest")
     validate_runtime_secrets(app_settings, env_settings)
     return LoadedConfig(settings=app_settings, fingerprint=compute_config_hash(app_settings))
