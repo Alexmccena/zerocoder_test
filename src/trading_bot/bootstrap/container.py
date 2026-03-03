@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from contextlib import suppress
+import asyncio
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -15,6 +17,7 @@ from trading_bot.adapters.exchanges.bybit.normalizers import normalize_private_m
 from trading_bot.adapters.exchanges.bybit.private_ws import BybitPrivateWebSocketClient
 from trading_bot.adapters.exchanges.bybit.public_ws import BybitPublicWebSocketClient
 from trading_bot.adapters.exchanges.bybit.rest import BybitRestClient
+from trading_bot.alerts.service import TelegramAlertService
 from trading_bot.bootstrap.settings import BootstrapSettings
 from trading_bot.config.loader import load_app_config
 from trading_bot.config.schema import AppSettings
@@ -33,6 +36,7 @@ from trading_bot.replay.feed import ReplayFeed
 from trading_bot.replay.reader import ReplayReader
 from trading_bot.risk.basic import BasicRiskEngine
 from trading_bot.runtime.clock import BacktestClock, ReplayClock, WallClock
+from trading_bot.runtime.control import RuntimeControlPlane
 from trading_bot.runtime.runner import RuntimeRunner
 from trading_bot.runtime.state import RuntimeStateStore
 from trading_bot.storage.db import build_async_engine, create_session_factory, ping_database
@@ -264,6 +268,8 @@ class RuntimeContainer:
     redis_client: Redis
     metrics: AppMetrics
     runtime_runner: RuntimeRunner
+    control_plane: RuntimeControlPlane
+    telegram_service: TelegramAlertService | None = None
 
     @classmethod
     def build(
@@ -339,6 +345,7 @@ class RuntimeContainer:
             clock = ReplayClock(speed=loaded.settings.replay.speed) if mode == RunMode.REPLAY else BacktestClock()
 
         runtime_state = RuntimeStateStore(run_mode=mode, execution_venue=ExecutionVenueKind.PAPER)
+        control_plane = RuntimeControlPlane(config=loaded.settings, state_store=runtime_state)
         strategy = build_strategy(config=loaded.settings, runtime_state_provider=lambda: runtime_state.state)
         risk_engine = BasicRiskEngine(config=loaded.settings)
         execution_engine = ExecutionEngine(config=loaded.settings, venue=PaperVenue(config=loaded.settings, metrics=metrics))
@@ -367,7 +374,18 @@ class RuntimeContainer:
             account_snapshots=account_snapshots,
             pnl_snapshots=pnl_snapshots,
             strategy_start_at=strategy_start_at,
+            control_plane=control_plane,
         )
+        telegram_service = None
+        if mode == RunMode.PAPER and loaded.settings.alerts.telegram.enabled and env_settings.telegram_bot_token is not None:
+            telegram_service = TelegramAlertService(
+                config=loaded.settings,
+                token=env_settings.telegram_bot_token,
+                logger=logger,
+                metrics=metrics,
+                control_plane=control_plane,
+            )
+            runtime_runner.alert_sink = telegram_service
         return cls(
             bootstrap=env_settings,
             config=loaded.settings,
@@ -378,13 +396,26 @@ class RuntimeContainer:
             redis_client=redis_client,
             metrics=metrics,
             runtime_runner=runtime_runner,
+            control_plane=control_plane,
+            telegram_service=telegram_service,
         )
 
     async def run_runtime(self, *, duration_seconds: int | None = None, summary_out: Path | None = None) -> dict[str, object]:
-        return await self.runtime_runner.run(duration_seconds=duration_seconds, summary_out=summary_out)
+        if self.telegram_service is None:
+            return await self.runtime_runner.run(duration_seconds=duration_seconds, summary_out=summary_out)
+
+        poll_task = asyncio.create_task(self.telegram_service.run())
+        try:
+            return await self.runtime_runner.run(duration_seconds=duration_seconds, summary_out=summary_out)
+        finally:
+            poll_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await poll_task
 
     async def shutdown(self) -> None:
         try:
+            if self.telegram_service is not None:
+                await self.telegram_service.close()
             await self.redis_client.aclose()
         finally:
             await self.db_engine.dispose()

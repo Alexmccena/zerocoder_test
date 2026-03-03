@@ -8,13 +8,15 @@ from pathlib import Path
 from redis.asyncio import Redis
 from structlog.stdlib import BoundLogger
 
+from trading_bot.alerts.protocols import OperationalAlertSink
 from trading_bot.config.schema import AppSettings
 from trading_bot.domain.enums import ExecutionVenueKind, RiskDecisionType, RunMode
-from trading_bot.domain.models import ExecutionResult, MarketSnapshot, PnlSnapshot
+from trading_bot.domain.models import ExecutionResult, MarketSnapshot, PnlSnapshot, RiskDecision
 from trading_bot.execution.engine import ExecutionEngine
 from trading_bot.marketdata.events import KlineEvent, MarketEvent
 from trading_bot.marketdata.snapshots import FeatureProvider, MarketSnapshotBuilder
 from trading_bot.observability.metrics import AppMetrics
+from trading_bot.runtime.control import RuntimeControlPlane
 from trading_bot.runtime.reconciliation import RuntimeReconciler
 from trading_bot.runtime.reporting import build_runtime_summary
 from trading_bot.runtime.state import RuntimeStateStore
@@ -67,6 +69,8 @@ class RuntimeRunner:
         account_snapshots: AccountSnapshotRepository,
         pnl_snapshots: PnlSnapshotRepository,
         strategy_start_at: datetime | None,
+        control_plane: RuntimeControlPlane | None = None,
+        alert_sink: OperationalAlertSink | None = None,
     ) -> None:
         self.config = config
         self.config_hash = config_hash
@@ -92,6 +96,8 @@ class RuntimeRunner:
         self.account_snapshots = account_snapshots
         self.pnl_snapshots = pnl_snapshots
         self.strategy_start_at = strategy_start_at
+        self.control_plane = control_plane
+        self.alert_sink = alert_sink
         self._redis_degraded = False
         self._reconciler = RuntimeReconciler(execution_engine=execution_engine)
         self._last_reconciliation_at: datetime | None = None
@@ -106,6 +112,8 @@ class RuntimeRunner:
         )
         state = self.state_store
         state.attach_run_session(run_session.id)
+        if self.control_plane is not None:
+            self.control_plane.bind_run(started_at=run_session.created_at)
 
         total_signals = 0
         total_orders = 0
@@ -129,6 +137,16 @@ class RuntimeRunner:
             await self.account_snapshots.create_paper_snapshot(run_session_id=run_session.id, account=initial_account)
             state.sync_brackets(self.execution_engine.active_brackets())
             await self._publish_runtime_state(run_session.id, state)
+            await self._emit_alert(
+                kind="startup",
+                severity="info",
+                text=(
+                    "Runtime started. "
+                    f"mode={self.config.runtime.mode.value} "
+                    f"environment={self.config.runtime.environment.value} "
+                    f"run_session_id={run_session.id}"
+                ),
+            )
 
             for event in await self.market_feed.prime(self.config.symbols.allowlist):
                 await self._process_market_event(
@@ -158,6 +176,11 @@ class RuntimeRunner:
                     latest_pnl = persisted_pnl
         except Exception as exc:
             await self.run_sessions.mark_failed(run_session.id, reason=exc.__class__.__name__)
+            await self._emit_alert(
+                kind="failure",
+                severity="critical",
+                text=f"Runtime failed. run_session_id={run_session.id} error={exc.__class__.__name__}",
+            )
             self.logger.exception("runtime_run_failed", run_session_id=run_session.id)
             raise
         else:
@@ -176,6 +199,19 @@ class RuntimeRunner:
                 self.metrics.record_backtest_duration(time.perf_counter() - started_at)
                 if latest_pnl is not None:
                     self.metrics.set_backtest_max_drawdown(float(latest_pnl.drawdown))
+            await self._emit_alert(
+                kind="shutdown",
+                severity="info",
+                text=(
+                    "Runtime completed. "
+                    f"run_session_id={run_session.id} "
+                    f"final_equity={summary['final_equity']} "
+                    f"net_pnl={summary['net_pnl']} "
+                    f"signals={summary['total_signals']} "
+                    f"orders={summary['total_orders']} "
+                    f"fills={summary['total_fills']}"
+                ),
+            )
             return summary
         finally:
             await self.market_feed.close()
@@ -192,6 +228,8 @@ class RuntimeRunner:
         snapshot = self.snapshot_builder.build(event.symbol, as_of=event.event_ts)
         self.feature_provider.observe(event, snapshot)
         state.update_snapshot(snapshot)
+        if self.control_plane is not None:
+            self.control_plane.note_market_event(as_of=event.event_ts)
 
         signals = 0
         orders_count = 0
@@ -216,6 +254,15 @@ class RuntimeRunner:
             if persisted_pnl is not None:
                 latest_pnl = persisted_pnl
             self._last_reconciliation_at = event.event_ts
+        control_orders, control_fills, control_pnl = await self._process_control_actions(
+            run_session_id=run_session_id,
+            state=state,
+            as_of=event.event_ts,
+        )
+        orders_count += control_orders
+        fills_count += control_fills
+        if control_pnl is not None:
+            latest_pnl = control_pnl
         await self._publish_runtime_state(run_session_id, state)
 
         if not evaluate_strategy or not self._should_evaluate_strategy(event=event, snapshot=snapshot):
@@ -236,7 +283,14 @@ class RuntimeRunner:
                     features=features,
                 ),
             )
-            decision = await self.risk_engine.assess(intent, state.state, snapshot)
+            if self.control_plane is not None and self.control_plane.should_block_intent(intent):
+                decision = RiskDecision(
+                    decision=RiskDecisionType.REJECT,
+                    reasons=["operator_paused"],
+                    payload={"control_plane": "paused"},
+                )
+            else:
+                decision = await self.risk_engine.assess(intent, state.state, snapshot)
             self.metrics.record_risk_decision(decision.decision.value)
             await self.risk_decisions.create(
                 run_session_id=run_session_id,
@@ -246,6 +300,14 @@ class RuntimeRunner:
                 decision=decision,
             )
             if decision.decision == RiskDecisionType.HALT:
+                await self._emit_alert(
+                    kind="risk_halt",
+                    severity="critical",
+                    text=(
+                        "Runtime halted by risk decision. "
+                        f"symbol={intent.symbol} reasons={','.join(decision.reasons)}"
+                    ),
+                )
                 raise RuntimeError(f"runtime halted for {intent.symbol}: {','.join(decision.reasons)}")
             if decision.decision != RiskDecisionType.ALLOW or decision.execution_plan is None:
                 continue
@@ -321,20 +383,117 @@ class RuntimeRunner:
             result.pnl_snapshot.run_session_id = run_session_id
             await self.pnl_snapshots.append(result.pnl_snapshot)
         if result.payload.get("protection_failure"):
+            was_active = state.state.kill_switch_state.protection_failure_active
             state.state.kill_switch_state.protection_failure_active = True
             state.state.kill_switch_state.protection_failure_reason = result.payload.get("protection_failure_reason")
             state.state.kill_switch_state.last_reason = result.payload.get("protection_failure_reason")
+            if not was_active:
+                await self._emit_alert(
+                    kind="protection_failure",
+                    severity="critical",
+                    text=(
+                        "Protection failure kill-switch activated. "
+                        f"reason={result.payload.get('protection_failure_reason', 'unknown')}"
+                    ),
+                )
         state.sync_brackets(self.execution_engine.active_brackets())
         return latest_pnl
+
+    async def _process_control_actions(
+        self,
+        *,
+        run_session_id: str,
+        state: RuntimeStateStore,
+        as_of: datetime,
+    ) -> tuple[int, int, PnlSnapshot | None]:
+        if self.control_plane is None:
+            return 0, 0, None
+        request = self.control_plane.take_pending_flatten()
+        if request is None:
+            return 0, 0, None
+
+        order_count = 0
+        fill_count = 0
+        latest_pnl: PnlSnapshot | None = None
+        flattened_symbols: list[str] = []
+        open_symbols = sorted(state.state.open_positions)
+
+        if not open_symbols:
+            self.control_plane.complete_flatten(
+                requested_at=as_of,
+                detail="No open positions remained by the time flatten was processed.",
+                success=False,
+            )
+            return order_count, fill_count, latest_pnl
+
+        for symbol in open_symbols:
+            submitted = await self.execution_engine.emergency_flatten(
+                symbol,
+                as_of=as_of,
+                reason=f"operator_flatten:{request.source}",
+            )
+            order_count += len(submitted.orders)
+            fill_count += len(submitted.fills)
+            persisted_pnl = await self._persist_execution_result(
+                run_session_id=run_session_id,
+                state=state,
+                result=submitted,
+            )
+            if persisted_pnl is not None:
+                latest_pnl = persisted_pnl
+
+            snapshot = state.state.market_state_by_symbol.get(symbol)
+            if snapshot is not None:
+                follow_up = await self.execution_engine.on_market_event(symbol=symbol, snapshot=snapshot, as_of=as_of)
+                order_count += len(follow_up.orders)
+                fill_count += len(follow_up.fills)
+                persisted_pnl = await self._persist_execution_result(
+                    run_session_id=run_session_id,
+                    state=state,
+                    result=follow_up,
+                )
+                if persisted_pnl is not None:
+                    latest_pnl = persisted_pnl
+
+            flattened_symbols.append(symbol)
+
+        detail = f"Flatten processed for: {', '.join(flattened_symbols)}."
+        self.control_plane.complete_flatten(requested_at=as_of, detail=detail, success=True)
+        await self._emit_alert(kind="flatten", severity="warning", text=detail)
+        return order_count, fill_count, latest_pnl
 
     async def _publish_runtime_state(self, run_session_id: str, state: RuntimeStateStore) -> None:
         if self._redis_degraded:
             return
         try:
+            status_payload: dict[str, object] = {
+                "run_mode": self.config.runtime.mode.value,
+                "config_hash": self.config_hash,
+                "open_positions": len(state.state.open_positions),
+                "open_orders": len(state.state.open_orders),
+            }
+            if self.control_plane is not None:
+                control_status = self.control_plane.build_status_snapshot()
+                status_payload.update(
+                    {
+                        "paused": control_status.paused,
+                        "flatten_pending": control_status.flatten_pending,
+                        "started_at": control_status.started_at.isoformat() if control_status.started_at else None,
+                        "last_market_event_at": (
+                            control_status.last_market_event_at.isoformat()
+                            if control_status.last_market_event_at
+                            else None
+                        ),
+                        "last_command": control_status.last_command,
+                        "last_command_status": control_status.last_command_status,
+                        "last_kill_switch_reason": control_status.last_kill_switch_reason,
+                        "protection_failure_active": control_status.protection_failure_active,
+                    }
+                )
             await publish_runtime_status(
                 self.redis_client,
                 run_session_id=run_session_id,
-                payload={"run_mode": self.config.runtime.mode.value, "config_hash": self.config_hash},
+                payload=status_payload,
             )
             if state.state.account_state is not None:
                 await publish_runtime_account(
@@ -406,3 +565,8 @@ class RuntimeRunner:
             loss_state.consecutive_losses = 0
             loss_state.cooldown_until = None
             kill_switch.consecutive_loss_cooldown_until = None
+
+    async def _emit_alert(self, *, kind: str, severity: str, text: str) -> None:
+        if self.alert_sink is None:
+            return
+        await self.alert_sink.broadcast(kind=kind, severity=severity, text=text)

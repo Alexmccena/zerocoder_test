@@ -52,6 +52,21 @@ observability:
   http_host: 0.0.0.0
   http_port: 8080
 
+alerts:
+  telegram:
+    enabled: false
+    chat_ids: []
+    allowed_chat_ids: []
+    allowed_user_ids: []
+    poll_interval_seconds: 2
+    long_poll_timeout_seconds: 15
+    min_severity: info
+    startup_enabled: true
+    shutdown_enabled: true
+    command_echo_enabled: true
+    risk_halt_enabled: true
+    protection_failure_enabled: true
+
 strategy:
   name: phase3_placeholder
   default_timeframe: 1m

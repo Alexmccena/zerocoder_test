@@ -127,6 +127,38 @@ def test_run_command_uses_runtime_container(monkeypatch) -> None:
     assert captured["shutdown"] is True
 
 
+def test_soak_paper_command_uses_runtime_container(monkeypatch, tmp_path) -> None:
+    apply_env(monkeypatch)
+    captured = {}
+    summary_path = tmp_path / "summary.json"
+
+    class FakeRuntimeContainer:
+        async def run_runtime(self, *, duration_seconds: int | None = None, summary_out=None) -> dict[str, object]:
+            captured["duration_seconds"] = duration_seconds
+            captured["summary_out"] = summary_out
+            return {"mode": "paper"}
+
+        async def shutdown(self) -> None:
+            captured["shutdown"] = True
+
+    def fake_build_runtime_container(bootstrap, *, mode: RunMode, source=None, start_at=None, end_at=None, speed=None):
+        captured["mode"] = mode
+        return FakeRuntimeContainer()
+
+    monkeypatch.setattr("trading_bot.cli.build_runtime_container", fake_build_runtime_container)
+
+    result = runner.invoke(
+        app,
+        ["soak-paper", "--duration-seconds", "10", "--summary-out", str(summary_path)],
+    )
+
+    assert result.exit_code == 0
+    assert captured["mode"] == RunMode.PAPER
+    assert captured["duration_seconds"] == 10
+    assert captured["summary_out"] == summary_path
+    assert captured["shutdown"] is True
+
+
 def test_run_live_returns_not_implemented(monkeypatch) -> None:
     apply_env(monkeypatch)
 

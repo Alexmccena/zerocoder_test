@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -71,6 +72,31 @@ class ObservabilityConfig(ConfigModel):
     log_level: str
     http_host: str
     http_port: int = Field(ge=1, le=65535)
+
+
+class TelegramAlertsConfig(ConfigModel):
+    enabled: bool = False
+    chat_ids: list[int] = Field(default_factory=list)
+    allowed_chat_ids: list[int] = Field(default_factory=list)
+    allowed_user_ids: list[int] = Field(default_factory=list)
+    poll_interval_seconds: int = Field(default=2, ge=1)
+    long_poll_timeout_seconds: int = Field(default=15, ge=1, le=60)
+    min_severity: Literal["info", "warning", "critical"] = "info"
+    startup_enabled: bool = True
+    shutdown_enabled: bool = True
+    command_echo_enabled: bool = True
+    risk_halt_enabled: bool = True
+    protection_failure_enabled: bool = True
+
+    @model_validator(mode="after")
+    def align_allowed_chat_ids(self) -> "TelegramAlertsConfig":
+        if not self.allowed_chat_ids and self.chat_ids:
+            self.allowed_chat_ids = list(self.chat_ids)
+        return self
+
+
+class AlertsConfig(ConfigModel):
+    telegram: TelegramAlertsConfig = Field(default_factory=TelegramAlertsConfig)
 
 
 class PlaceholderStrategyConfig(ConfigModel):
@@ -289,6 +315,7 @@ class AppSettings(ConfigModel):
     market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
     storage: StorageConfig
     observability: ObservabilityConfig
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     paper: PaperConfig = Field(default_factory=PaperConfig)
     replay: ReplayConfig = Field(default_factory=ReplayConfig)

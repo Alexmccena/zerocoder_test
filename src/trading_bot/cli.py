@@ -126,6 +126,24 @@ def run(
     asyncio.run(_run_runtime(container, duration_seconds=duration_seconds))
 
 
+@app.command("soak-paper")
+def soak_paper(
+    duration_seconds: int = typer.Option(
+        default=72 * 60 * 60,
+        help="Wall-clock duration for the paper soak run.",
+    ),
+    summary_out: Path | None = typer.Option(default=None, help="Optional path for summary JSON."),
+) -> None:
+    overrides: dict[str, object] = {
+        "runtime": {"mode": "paper"},
+        "exchange": {"private_state_enabled": False},
+    }
+    loaded = _load_config_or_exit(overrides=overrides)
+    container = build_runtime_container(loaded.bootstrap, mode=RunMode.PAPER)
+    summary = asyncio.run(_run_runtime(container, duration_seconds=duration_seconds, summary_out=summary_out))
+    typer.echo(json.dumps(summary, indent=2))
+
+
 @app.command()
 def capture(
     duration_seconds: int | None = typer.Option(

@@ -184,6 +184,22 @@ def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
                 "fail_on_gap": True,
                 "max_gap_seconds": 30,
             },
+            "alerts": {
+                "telegram": {
+                    "enabled": False,
+                    "chat_ids": [],
+                    "allowed_chat_ids": [],
+                    "allowed_user_ids": [],
+                    "poll_interval_seconds": 2,
+                    "long_poll_timeout_seconds": 15,
+                    "min_severity": "info",
+                    "startup_enabled": True,
+                    "shutdown_enabled": True,
+                    "command_echo_enabled": True,
+                    "risk_halt_enabled": True,
+                    "protection_failure_enabled": True,
+                }
+            },
             "strategy": _default_strategy_document(),
             "risk": {
                 "stale_market_data_seconds": 2,
@@ -230,6 +246,12 @@ def validate_runtime_secrets(settings: AppSettings, env_settings: BootstrapSetti
             "TB_BYBIT_API_KEY and TB_BYBIT_API_SECRET are required when "
             "exchange.private_state_enabled=true"
         )
+    telegram = settings.alerts.telegram
+    if settings.runtime.mode in {RunMode.PAPER, RunMode.LIVE} and telegram.enabled:
+        if not env_settings.telegram_bot_token:
+            raise ConfigLoadError("TB_TELEGRAM_BOT_TOKEN is required when alerts.telegram.enabled=true")
+        if not telegram.chat_ids:
+            raise ConfigLoadError("alerts.telegram.chat_ids is required when alerts.telegram.enabled=true")
 
 
 def compute_config_hash(payload: AppSettings | dict[str, Any]) -> str:

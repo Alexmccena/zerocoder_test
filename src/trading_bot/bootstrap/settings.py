@@ -30,6 +30,7 @@ class BootstrapSettings(BaseSettings):
     http_port: int = 8080
     bybit_api_key: str | None = None
     bybit_api_secret: str | None = None
+    telegram_bot_token: str | None = None
 
     @property
     def resolved_config_file(self) -> Path:

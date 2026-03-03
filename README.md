@@ -32,6 +32,7 @@ Required environment variables:
 - `TB_HTTP_PORT`
 - `TB_BYBIT_API_KEY` (required only when `exchange.private_state_enabled=true`)
 - `TB_BYBIT_API_SECRET` (required only when `exchange.private_state_enabled=true`)
+- `TB_TELEGRAM_BOT_TOKEN` (required only when `alerts.telegram.enabled=true`)
 
 ## Local commands
 
@@ -43,9 +44,36 @@ uv run bot db upgrade
 uv run bot serve
 uv run bot capture --duration-seconds 30 --public-only
 uv run bot run --mode paper --duration-seconds 30
+uv run bot soak-paper --duration-seconds 600
 uv run bot replay --source data/market_archive --speed 10
 uv run bot backtest --source data/market_archive
 ```
+
+## Telegram operations
+
+`bot run --mode paper` now starts Telegram operational polling automatically when `alerts.telegram.enabled=true`.
+
+Supported commands:
+
+- `/status`
+- `/risk`
+- `/pause`
+- `/resume`
+- `/flatten`
+
+Configure alert routing and command authorization in YAML:
+
+```yaml
+alerts:
+  telegram:
+    enabled: true
+    chat_ids: [123456789]
+    allowed_chat_ids: [123456789]
+    allowed_user_ids: [987654321]
+    min_severity: info
+```
+
+Keep the bot token in `TB_TELEGRAM_BOT_TOKEN`, not in YAML.
 
 ## SMC smoke replay
 
@@ -95,3 +123,5 @@ This repository now contains the foundation layer, phase-2 market-data capture, 
 - phase-3 paper venue, replay reader, and shared backtest runtime
 
 Live Bybit execution, production strategy logic, and LLM integration are intentionally deferred.
+
+Paper soak instructions live in [docs/runbooks/paper_soak.md](docs/runbooks/paper_soak.md).

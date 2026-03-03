@@ -163,6 +163,24 @@ class AppMetrics:
             "Latest backtest max drawdown.",
             registry=self.registry,
         )
+        self.operational_alerts_sent_total = Counter(
+            "tb_operational_alerts_sent_total",
+            "Number of operational alerts sent.",
+            ["channel", "severity", "kind"],
+            registry=self.registry,
+        )
+        self.operational_alerts_failed_total = Counter(
+            "tb_operational_alerts_failed_total",
+            "Number of failed operational alerts.",
+            ["channel", "severity", "kind"],
+            registry=self.registry,
+        )
+        self.telegram_commands_total = Counter(
+            "tb_telegram_commands_total",
+            "Number of Telegram command attempts.",
+            ["command", "outcome"],
+            registry=self.registry,
+        )
 
     def record_app_start(self) -> None:
         self.app_start_total.inc()
@@ -245,6 +263,13 @@ class AppMetrics:
 
     def set_backtest_max_drawdown(self, value: float) -> None:
         self.backtest_max_drawdown.set(value)
+
+    def record_operational_alert(self, *, channel: str, severity: str, kind: str, success: bool) -> None:
+        counter = self.operational_alerts_sent_total if success else self.operational_alerts_failed_total
+        counter.labels(channel=channel, severity=severity, kind=kind).inc()
+
+    def record_telegram_command(self, *, command: str, outcome: str) -> None:
+        self.telegram_commands_total.labels(command=command, outcome=outcome).inc()
 
     def render(self) -> bytes:
         return generate_latest(self.registry)
