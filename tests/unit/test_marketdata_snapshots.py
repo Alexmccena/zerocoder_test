@@ -27,50 +27,49 @@ def test_snapshot_builder_and_feature_provider_compute_expected_values() -> None
             )
         ]
     )
-    builder.apply_event(
-        OrderBookEvent(
-            exchange_name=ExchangeName.BYBIT,
-            symbol="BTCUSDT",
-            event_ts=now,
-            depth=50,
-            bids=[OrderBookLevel(price=Decimal("100"), size=Decimal("6"))],
-            asks=[OrderBookLevel(price=Decimal("101"), size=Decimal("4"))],
-        )
+    first_orderbook = OrderBookEvent(
+        exchange_name=ExchangeName.BYBIT,
+        symbol="BTCUSDT",
+        event_ts=now,
+        depth=50,
+        bids=[OrderBookLevel(price=Decimal("100"), size=Decimal("6"))],
+        asks=[OrderBookLevel(price=Decimal("101"), size=Decimal("4"))],
     )
-    builder.apply_event(
-        KlineEvent(
-            exchange_name=ExchangeName.BYBIT,
-            symbol="BTCUSDT",
-            event_ts=now,
-            interval="1m",
-            start_at=now - timedelta(minutes=2),
-            end_at=now - timedelta(minutes=1),
-            open_price=Decimal("90"),
-            high_price=Decimal("101"),
-            low_price=Decimal("89"),
-            close_price=Decimal("100"),
-            volume=Decimal("10"),
-            is_closed=True,
-        )
+    builder.apply_event(first_orderbook)
+    provider.observe(first_orderbook, builder.build("BTCUSDT", as_of=now))
+    first_kline = KlineEvent(
+        exchange_name=ExchangeName.BYBIT,
+        symbol="BTCUSDT",
+        event_ts=now,
+        interval="1m",
+        start_at=now - timedelta(minutes=2),
+        end_at=now - timedelta(minutes=1),
+        open_price=Decimal("90"),
+        high_price=Decimal("101"),
+        low_price=Decimal("89"),
+        close_price=Decimal("100"),
+        volume=Decimal("10"),
+        is_closed=True,
     )
+    builder.apply_event(first_kline)
+    provider.observe(first_kline, builder.build("BTCUSDT", as_of=now))
     provider.compute(builder.build("BTCUSDT", as_of=now))
-    builder.apply_event(
-        KlineEvent(
-            exchange_name=ExchangeName.BYBIT,
-            symbol="BTCUSDT",
-            event_ts=now + timedelta(minutes=1),
-            interval="1m",
-            start_at=now - timedelta(minutes=1),
-            end_at=now,
-            open_price=Decimal("100"),
-            high_price=Decimal("111"),
-            low_price=Decimal("99"),
-            close_price=Decimal("110"),
-            volume=Decimal("10"),
-            is_closed=True,
-        )
+    second_kline = KlineEvent(
+        exchange_name=ExchangeName.BYBIT,
+        symbol="BTCUSDT",
+        event_ts=now + timedelta(minutes=1),
+        interval="1m",
+        start_at=now - timedelta(minutes=1),
+        end_at=now,
+        open_price=Decimal("100"),
+        high_price=Decimal("111"),
+        low_price=Decimal("99"),
+        close_price=Decimal("110"),
+        volume=Decimal("10"),
+        is_closed=True,
     )
-
+    builder.apply_event(second_kline)
+    provider.observe(second_kline, builder.build("BTCUSDT", as_of=now + timedelta(minutes=1)))
     snapshot = builder.build("BTCUSDT", as_of=now + timedelta(seconds=1))
     features = provider.compute(snapshot)
 

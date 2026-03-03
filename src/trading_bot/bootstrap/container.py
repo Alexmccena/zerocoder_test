@@ -50,7 +50,7 @@ from trading_bot.storage.repositories import (
     RunSessionRepository,
     SignalEventRepository,
 )
-from trading_bot.strategies.phase3_placeholder import Phase3PlaceholderStrategy
+from trading_bot.strategies import build_strategy
 
 
 @dataclass(slots=True)
@@ -308,6 +308,9 @@ class RuntimeContainer:
         account_snapshots = AccountSnapshotRepository(session_factory)
         pnl_snapshots = PnlSnapshotRepository(session_factory)
 
+        snapshot_builder = MarketSnapshotBuilder(stale_after_seconds=loaded.settings.risk.stale_market_data_seconds)
+        feature_provider = FeatureProvider(config=loaded.settings)
+
         if mode == RunMode.PAPER:
             rest_client = BybitRestClient(
                 config=loaded.settings,
@@ -323,7 +326,8 @@ class RuntimeContainer:
             strategy_start_at = loaded.settings.replay.start_at
             reader_start_at = strategy_start_at
             if reader_start_at is not None:
-                reader_start_at = reader_start_at - timedelta(minutes=loaded.settings.replay.warmup_minutes)
+                effective_warmup = max(loaded.settings.replay.warmup_minutes, feature_provider.required_warmup_minutes())
+                reader_start_at = reader_start_at - timedelta(minutes=effective_warmup)
             replay_reader = ReplayReader(
                 source_root=Path(loaded.settings.replay.source_root or ""),
                 start_at=reader_start_at,
@@ -334,10 +338,8 @@ class RuntimeContainer:
             market_feed = ReplayFeed(reader=replay_reader, strategy_start_at=strategy_start_at)
             clock = ReplayClock(speed=loaded.settings.replay.speed) if mode == RunMode.REPLAY else BacktestClock()
 
-        snapshot_builder = MarketSnapshotBuilder(stale_after_seconds=loaded.settings.risk.stale_market_data_seconds)
-        feature_provider = FeatureProvider(timeframe=loaded.settings.strategy.default_timeframe)
         runtime_state = RuntimeStateStore(run_mode=mode, execution_venue=ExecutionVenueKind.PAPER)
-        strategy = Phase3PlaceholderStrategy(config=loaded.settings, runtime_state_provider=lambda: runtime_state.state)
+        strategy = build_strategy(config=loaded.settings, runtime_state_provider=lambda: runtime_state.state)
         risk_engine = BasicRiskEngine(config=loaded.settings)
         execution_engine = ExecutionEngine(venue=PaperVenue(config=loaded.settings, metrics=metrics))
         runtime_runner = RuntimeRunner(

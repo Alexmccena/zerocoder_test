@@ -47,6 +47,25 @@ uv run bot replay --source data/market_archive --speed 10
 uv run bot backtest --source data/market_archive
 ```
 
+## SMC smoke replay
+
+`config/dev.yaml` now enables `strategy.name: smc_scalper_v1` with reduced history sizes for local smoke runs.
+
+The repository also includes a small replay dataset generator that produces one deterministic `open_long -> close_long` cycle on `BTCUSDT`:
+
+```bash
+docker compose up -d
+uv run bot db upgrade
+uv run python -m trading_bot.replay.sample_archive --output data/dev_market_archive/smc_scalper_v1_sample
+uv run bot backtest --source data/dev_market_archive/smc_scalper_v1_sample --summary-out data/dev_market_archive/smc_scalper_v1_summary.json
+uv run bot replay --source data/dev_market_archive/smc_scalper_v1_sample --speed 20
+```
+
+The generated archive spans `2026-03-03T00:01:00+00:00` to `2026-03-03T04:30:00+00:00` and is expected to emit exactly two strategy signals:
+
+- `open_long`
+- `close_long`
+
 ## IDE notes
 
 - The project uses a `src/` layout. `pyrightconfig.json` and `.vscode/settings.json` are included so the IDE can resolve the local `trading_bot` package.

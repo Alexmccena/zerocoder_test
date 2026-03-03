@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from trading_bot.marketdata.events import (
         FundingRateEvent,
         KlineEvent,
+        LiquidationEvent,
         OpenInterestEvent,
         OrderBookEvent,
         TickerEvent,
@@ -177,6 +178,14 @@ class TradeIntent(DomainModel):
     generated_at: datetime = Field(default_factory=utc_now)
 
 
+class ExecutionPlan(DomainModel):
+    execution_venue: ExecutionVenueKind
+    entry_order: OrderIntent
+    protective_orders: list[OrderIntent] = Field(default_factory=list)
+    intent_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class RiskDecision(DomainModel):
     decision: RiskDecisionType
     reasons: list[str] = Field(default_factory=list)
@@ -206,6 +215,110 @@ class MarketSnapshot(DomainModel):
     data_is_stale: bool = False
 
 
+class BiasState(DomainModel):
+    timeframe: str = "15m"
+    state: str = "neutral"
+    event_type: str | None = None
+    direction: str = "neutral"
+    age_bars: int | None = None
+    last_event_at: datetime | None = None
+
+
+class StructureState(DomainModel):
+    timeframe: str
+    direction: str = "neutral"
+    event_type: str | None = None
+    pivot_high: Decimal | None = None
+    pivot_low: Decimal | None = None
+    break_price: Decimal | None = None
+    age_bars: int | None = None
+    last_event_at: datetime | None = None
+    is_active: bool = False
+
+
+class LiquiditySweepState(DomainModel):
+    side: str
+    swept_level: Decimal
+    sweep_at: datetime
+    reclaim_at: datetime
+    age_bars: int
+    is_active: bool = True
+
+
+class FairValueGapZone(DomainModel):
+    side: str
+    lower_bound: Decimal
+    upper_bound: Decimal
+    created_at: datetime
+    timeframe: str = "1m"
+    age_bars: int
+    is_active: bool = True
+    touched: bool = False
+
+
+class OrderBlockZone(DomainModel):
+    side: str
+    lower_bound: Decimal
+    upper_bound: Decimal
+    created_at: datetime
+    timeframe: str = "1m"
+    age_bars: int
+    source_event_type: str | None = None
+    is_active: bool = True
+    touched: bool = False
+
+
+class OrderBookFeatureState(DomainModel):
+    imbalance_levels: int = 5
+    imbalance: float = 0.0
+    has_fresh_orderbook: bool = False
+    supportive_long_imbalance: bool = False
+    supportive_short_imbalance: bool = False
+    has_bid_wall: bool = False
+    has_ask_wall: bool = False
+    bid_wall_price: Decimal | None = None
+    ask_wall_price: Decimal | None = None
+    bid_wall_size: Decimal | None = None
+    ask_wall_size: Decimal | None = None
+    wall_persistence: int = 0
+
+
+class OpenInterestFeatureState(DomainModel):
+    available: bool = False
+    delta_bps: Decimal = Decimal("0")
+    supportive_long: bool = False
+    supportive_short: bool = False
+    lookback_points: int = 0
+
+
+class FundingFeatureState(DomainModel):
+    enabled: bool = True
+    available: bool = False
+    funding_rate: Decimal = Decimal("0")
+    blocks_long: bool = False
+    blocks_short: bool = False
+
+
+class LiquidationFeatureState(DomainModel):
+    enabled: bool = False
+    available: bool = False
+    supportive_long: bool = False
+    supportive_short: bool = False
+    same_side_events: int = 0
+    window_seconds: int = 0
+
+
+class SetupCandidate(DomainModel):
+    side: str
+    zone_type: str
+    lower_bound: Decimal
+    upper_bound: Decimal
+    created_at: datetime
+    age_bars: int
+    touched: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class FeatureSnapshot(DomainModel):
     symbol: str
     last_close_change_bps: Decimal = Decimal("0")
@@ -213,15 +326,19 @@ class FeatureSnapshot(DomainModel):
     open_interest_delta: Decimal = Decimal("0")
     funding_rate: Decimal = Decimal("0")
     has_fresh_orderbook: bool = False
+    bias_state: BiasState = Field(default_factory=BiasState)
+    structure_state: StructureState = Field(default_factory=lambda: StructureState(timeframe="5m"))
+    entry_structure_state: StructureState = Field(default_factory=lambda: StructureState(timeframe="1m"))
+    sweep: LiquiditySweepState | None = None
+    active_fvgs: list[FairValueGapZone] = Field(default_factory=list)
+    active_order_blocks: list[OrderBlockZone] = Field(default_factory=list)
+    orderbook_state: OrderBookFeatureState = Field(default_factory=OrderBookFeatureState)
+    open_interest_state: OpenInterestFeatureState = Field(default_factory=OpenInterestFeatureState)
+    funding_state: FundingFeatureState = Field(default_factory=FundingFeatureState)
+    liquidation_state: LiquidationFeatureState = Field(default_factory=LiquidationFeatureState)
+    setup_candidates: list[SetupCandidate] = Field(default_factory=list)
+    warmup_complete: bool = False
     payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class ExecutionPlan(DomainModel):
-    execution_venue: ExecutionVenueKind
-    entry_order: OrderIntent
-    protective_orders: list[OrderIntent] = Field(default_factory=list)
-    intent_id: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PnlSnapshot(DomainModel):
@@ -255,11 +372,6 @@ class RuntimeState(DomainModel):
     open_positions: dict[str, PositionState] = Field(default_factory=dict)
     market_state_by_symbol: dict[str, MarketSnapshot] = Field(default_factory=dict)
     started_at: datetime = Field(default_factory=utc_now)
-
-
-from trading_bot.marketdata.events import FundingRateEvent, KlineEvent, OpenInterestEvent, OrderBookEvent, TickerEvent, TradeEvent
-
-MarketSnapshot.model_rebuild()
 
 
 class HealthReport(DomainModel):

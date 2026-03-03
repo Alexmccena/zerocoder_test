@@ -16,6 +16,7 @@ from trading_bot.marketdata.events import (
     TickerEvent,
     TradeEvent,
 )
+from trading_bot.timeframes import canonicalize_interval
 
 
 EVENT_TYPE_PRIORITY = {
@@ -112,6 +113,10 @@ class ReplayReader:
         normalized = dict(row)
         if isinstance(normalized.get("raw_payload"), str):
             normalized["raw_payload"] = json.loads(normalized["raw_payload"])
+        if normalized.get("event_type") == "kline" and "interval" in normalized:
+            normalized["interval"] = canonicalize_interval(normalized["interval"])
+        if normalized.get("event_type") == "open_interest" and normalized.get("interval") is not None:
+            normalized["interval"] = canonicalize_interval(normalized["interval"])
         return normalized
 
     def _validate_rows(self, rows: list[_ReplayRow]) -> None:

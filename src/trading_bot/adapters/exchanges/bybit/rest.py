@@ -18,6 +18,7 @@ from trading_bot.adapters.exchanges.bybit.normalizers import (
     normalize_open_interest,
     normalize_order,
     normalize_position,
+    normalize_rest_klines,
 )
 from trading_bot.config.schema import AppSettings
 from trading_bot.domain.models import AccountState, ExchangeCapabilities, Instrument, OrderState, PositionState
@@ -92,12 +93,12 @@ class BybitRestClient:
         allowlist = set(symbols)
         return [instrument for instrument in instruments if instrument.symbol in allowlist]
 
-    async def fetch_recent_klines(self, symbol: str, *, interval: int, limit: int) -> list[dict[str, Any]]:
+    async def fetch_recent_klines(self, symbol: str, *, interval: str | int, limit: int) -> list:
         result = await self._request(
             "/v5/market/kline",
             params={"category": "linear", "symbol": symbol, "interval": interval, "limit": limit},
         )
-        return list(result.get("list", []))
+        return normalize_rest_klines(symbol, interval=interval, rows=list(result.get("list", [])))
 
     async def fetch_open_interest(self, symbol: str) -> OpenInterestEvent | None:
         result = await self._request(

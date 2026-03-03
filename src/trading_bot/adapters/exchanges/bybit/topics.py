@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from trading_bot.config.schema import MarketDataConfig
+from trading_bot.timeframes import interval_to_bybit
 
 
 def build_public_topics(symbols: Sequence[str], market_data: MarketDataConfig) -> list[str]:
@@ -16,7 +17,7 @@ def build_public_topics(symbols: Sequence[str], market_data: MarketDataConfig) -
         if market_data.enable_liquidations:
             topics.append(f"allLiquidation.{symbol}")
         for interval in market_data.kline_intervals:
-            topics.append(f"kline.{interval}.{symbol}")
+            topics.append(f"kline.{interval_to_bybit(interval)}.{symbol}")
     return topics
 
 

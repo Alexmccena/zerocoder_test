@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from trading_bot.domain.enums import ExchangeName
-from trading_bot.domain.models import DomainModel, OrderState, PositionState, utc_now
+from trading_bot.domain.models import DomainModel, MarketSnapshot, OrderState, PositionState, utc_now
 
 
 class EventEnvelope(DomainModel):
@@ -125,3 +125,15 @@ class ExecutionEvent(PrivateStateEvent):
 class PositionUpdateEvent(PrivateStateEvent):
     event_type: Literal["position"] = "position"
     position: PositionState
+
+
+MarketSnapshot.model_rebuild(
+    _types_namespace={
+        "FundingRateEvent": FundingRateEvent,
+        "KlineEvent": KlineEvent,
+        "OpenInterestEvent": OpenInterestEvent,
+        "OrderBookEvent": OrderBookEvent,
+        "TickerEvent": TickerEvent,
+        "TradeEvent": TradeEvent,
+    }
+)

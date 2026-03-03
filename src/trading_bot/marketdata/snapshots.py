@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
 
-from trading_bot.domain.models import FeatureSnapshot, Instrument, MarketSnapshot
+from trading_bot.domain.models import Instrument, MarketSnapshot
+from trading_bot.features.engine import FeatureProvider
 from trading_bot.marketdata.events import (
     FundingRateEvent,
     KlineEvent,
@@ -70,50 +70,4 @@ class MarketSnapshotBuilder:
             open_interest=state.open_interest,
             funding_rate=state.funding_rate,
             data_is_stale=data_is_stale,
-        )
-
-
-class FeatureProvider:
-    def __init__(self, *, timeframe: str) -> None:
-        self.timeframe = timeframe
-        self._last_seen_kline_end: dict[str, datetime] = {}
-        self._previous_close: dict[str, Decimal] = {}
-        self._last_seen_open_interest: dict[str, Decimal] = {}
-
-    def compute(self, snapshot: MarketSnapshot) -> FeatureSnapshot:
-        latest_kline = snapshot.closed_klines_by_interval.get(self.timeframe)
-        last_close_change_bps = Decimal("0")
-        if latest_kline is not None and self._last_seen_kline_end.get(snapshot.symbol) != latest_kline.end_at:
-            previous_close = self._previous_close.get(snapshot.symbol)
-            if previous_close not in (None, Decimal("0")):
-                last_close_change_bps = ((latest_kline.close_price - previous_close) / previous_close) * Decimal(
-                    "10000"
-                )
-            self._previous_close[snapshot.symbol] = latest_kline.close_price
-            self._last_seen_kline_end[snapshot.symbol] = latest_kline.end_at
-
-        open_interest_delta = Decimal("0")
-        if snapshot.open_interest is not None:
-            previous_oi = self._last_seen_open_interest.get(snapshot.symbol)
-            if previous_oi is not None:
-                open_interest_delta = snapshot.open_interest.open_interest - previous_oi
-            self._last_seen_open_interest[snapshot.symbol] = snapshot.open_interest.open_interest
-
-        top5_bid = Decimal("0")
-        top5_ask = Decimal("0")
-        if snapshot.orderbook is not None:
-            top5_bid = sum((level.size for level in snapshot.orderbook.bids[:5]), start=Decimal("0"))
-            top5_ask = sum((level.size for level in snapshot.orderbook.asks[:5]), start=Decimal("0"))
-        denominator = top5_bid + top5_ask
-        top5_imbalance = float((top5_bid - top5_ask) / denominator) if denominator != 0 else 0.0
-        funding_rate = snapshot.funding_rate.funding_rate if snapshot.funding_rate is not None else Decimal("0")
-
-        return FeatureSnapshot(
-            symbol=snapshot.symbol,
-            last_close_change_bps=last_close_change_bps,
-            top5_imbalance=top5_imbalance,
-            open_interest_delta=open_interest_delta,
-            funding_rate=funding_rate,
-            has_fresh_orderbook=not snapshot.data_is_stale and snapshot.orderbook is not None,
-            payload={"timeframe": self.timeframe},
         )

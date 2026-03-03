@@ -8,6 +8,23 @@ exchange:
 observability:
   log_level: DEBUG
 
+strategy:
+  name: smc_scalper_v1
+  smc_scalper_v1:
+    history:
+      entry_bars: 24
+      structure_bars: 16
+      bias_bars: 16
+      orderbook_snapshots: 8
+      oi_points: 5
+    sweep:
+      lookback_bars: 6
+    exit:
+      max_hold_bars: 4
+
+replay:
+  max_gap_seconds: 120
+
 symbols:
   allowlist:
     - BTCUSDT

@@ -48,10 +48,113 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
+def _default_strategy_document() -> dict[str, Any]:
+    return {
+        "name": "phase3_placeholder",
+        "default_timeframe": "1m",
+        "placeholder": {
+            "signal_threshold_bps": 8.0,
+            "min_imbalance": 0.10,
+            "max_hold_closed_klines": 3,
+        },
+        "smc_scalper_v1": {
+            "bias_timeframe": "15m",
+            "structure_timeframe": "5m",
+            "entry_timeframe": "1m",
+            "history": {
+                "entry_bars": 160,
+                "structure_bars": 96,
+                "bias_bars": 64,
+                "orderbook_snapshots": 120,
+                "oi_points": 32,
+                "liquidation_events": 200,
+            },
+            "structure": {
+                "swing_lookback_bars": 2,
+                "min_break_bps": 2.0,
+                "max_signal_age_bars": 6,
+            },
+            "sweep": {
+                "lookback_bars": 20,
+                "reclaim_within_bars": 2,
+                "min_penetration_bps": 3.0,
+            },
+            "fvg": {
+                "min_gap_bps": 2.0,
+                "max_age_bars": 8,
+            },
+            "order_block": {
+                "impulse_displacement_bps": 15.0,
+                "max_age_bars": 12,
+            },
+            "orderbook": {
+                "imbalance_levels": 5,
+                "min_abs_imbalance": 0.12,
+                "wall_distance_bps": 20.0,
+                "wall_size_vs_median": 3.0,
+                "wall_min_persistence_snapshots": 3,
+            },
+            "open_interest": {
+                "lookback_points": 3,
+                "min_delta_bps": 5.0,
+            },
+            "funding": {
+                "enabled": True,
+                "adverse_threshold": "0.0005",
+                "missing_is_neutral": True,
+            },
+            "liquidations": {
+                "enabled": False,
+                "burst_window_seconds": 5,
+                "min_same_side_events": 3,
+                "missing_is_neutral": True,
+            },
+            "confirmations": {
+                "min_support_count": 2,
+            },
+            "entry": {
+                "mode": "market_first",
+                "allow_limit_retest": False,
+                "max_setup_age_bars": 3,
+            },
+            "exit": {
+                "max_hold_bars": 10,
+                "invalidation_buffer_bps": 2.0,
+            },
+        },
+    }
+
+
+def _normalize_strategy_document(raw: dict[str, Any] | None) -> dict[str, Any]:
+    strategy = dict(raw or {})
+    placeholder = strategy.pop("placeholder", {})
+    if not isinstance(placeholder, dict):
+        placeholder = {}
+    legacy_placeholder_mapping = {
+        "placeholder_signal_threshold_bps": "signal_threshold_bps",
+        "placeholder_min_imbalance": "min_imbalance",
+        "placeholder_max_hold_closed_klines": "max_hold_closed_klines",
+    }
+    for legacy_key, nested_key in legacy_placeholder_mapping.items():
+        if legacy_key in strategy:
+            legacy_value = strategy.pop(legacy_key)
+            placeholder[nested_key] = legacy_value
+
+    smc = strategy.pop("smc_scalper_v1", {})
+    if not isinstance(smc, dict):
+        smc = {}
+
+    normalized = _default_strategy_document()
+    normalized = deep_merge(normalized, strategy)
+    normalized["placeholder"] = deep_merge(normalized["placeholder"], placeholder)
+    normalized["smc_scalper_v1"] = deep_merge(normalized["smc_scalper_v1"], smc)
+    return normalized
+
+
 def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
     normalized = deep_merge(
         {
-            "config_version": 2,
+            "config_version": 3,
             "execution": {
                 "default_entry_type": "market",
                 "limit_ttl_ms": 3000,
@@ -76,13 +179,7 @@ def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
                 "fail_on_gap": True,
                 "max_gap_seconds": 30,
             },
-            "strategy": {
-                "name": "phase3_placeholder",
-                "default_timeframe": "1m",
-                "placeholder_signal_threshold_bps": 8.0,
-                "placeholder_min_imbalance": 0.10,
-                "placeholder_max_hold_closed_klines": 3,
-            },
+            "strategy": _default_strategy_document(),
             "risk": {
                 "stale_market_data_seconds": 2,
                 "one_position_per_symbol": True,
@@ -90,8 +187,8 @@ def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
         },
         raw,
     )
-    if normalized.get("config_version", 1) < 2:
-        normalized["config_version"] = 2
+    normalized["config_version"] = max(int(normalized.get("config_version", 1)), 3)
+    normalized["strategy"] = _normalize_strategy_document(normalized.get("strategy"))
     replay = normalized.setdefault("replay", {})
     if replay.get("source_root") is None:
         alias = normalized.get("runtime", {}).get("replay_source")
@@ -139,9 +236,11 @@ def load_app_config(
 ) -> LoadedConfig:
     base_path = base_file or project_root() / "config" / "base.yaml"
     overlay_path = env_settings.resolved_config_file
-    merged = deep_merge(
-        normalize_config_document(_read_yaml(base_path)),
-        normalize_config_document(_read_yaml(overlay_path)),
+    merged = normalize_config_document(
+        deep_merge(
+            _read_yaml(base_path),
+            _read_yaml(overlay_path),
+        )
     )
     merged = deep_merge(merged, build_env_overrides(env_settings))
     if overrides is not None:

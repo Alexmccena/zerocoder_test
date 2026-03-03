@@ -6,6 +6,7 @@ from trading_bot.adapters.exchanges.bybit.normalizers import normalize_public_me
 from trading_bot.adapters.exchanges.bybit.public_ws import BybitPublicWebSocketClient
 from trading_bot.adapters.exchanges.bybit.rest import BybitRestClient
 from trading_bot.marketdata.events import MarketEvent
+from trading_bot.timeframes import interval_to_bybit
 
 
 class BybitPublicMarketFeed:
@@ -24,12 +25,20 @@ class BybitPublicMarketFeed:
     async def prime(self, symbols: Sequence[str]) -> list[MarketEvent]:
         events: list[MarketEvent] = []
         for symbol in symbols:
+            for interval in self.rest_client.config.market_data.kline_intervals:
+                klines = await self.rest_client.fetch_recent_klines(
+                    symbol,
+                    interval=interval_to_bybit(interval),
+                    limit=self.rest_client.config.market_data.bootstrap_kline_limit,
+                )
+                events.extend(klines)
             open_interest = await self.rest_client.fetch_open_interest(symbol)
             if open_interest is not None:
                 events.append(open_interest)
             funding = await self.rest_client.fetch_funding_rate(symbol)
             if funding is not None:
                 events.append(funding)
+        events.sort(key=lambda event: (event.event_ts, event.event_type, event.symbol))
         return events
 
     async def stream(self, symbols: Sequence[str]) -> AsyncIterator[MarketEvent]:

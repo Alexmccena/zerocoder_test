@@ -185,6 +185,7 @@ class RuntimeRunner:
     ) -> tuple[int, int, int, PnlSnapshot | None]:
         self.snapshot_builder.apply_event(event)
         snapshot = self.snapshot_builder.build(event.symbol, as_of=event.event_ts)
+        self.feature_provider.observe(event, snapshot)
         state.update_snapshot(snapshot)
 
         signals = 0
@@ -210,10 +211,10 @@ class RuntimeRunner:
                 symbol=intent.symbol,
                 strategy_name=intent.strategy_name,
                 signal_type=intent.action.value,
-                payload_json={
-                    "intent": intent.model_dump(mode="json"),
-                    "features": features.model_dump(mode="json"),
-                },
+                payload_json=self._build_signal_payload(
+                    intent=intent,
+                    features=features,
+                ),
             )
             decision = await self.risk_engine.assess(intent, state.state, snapshot)
             self.metrics.record_risk_decision(decision.decision.value)
@@ -255,6 +256,17 @@ class RuntimeRunner:
                 latest_pnl = persisted_pnl
 
         return signals, orders_count, fills_count, latest_pnl
+
+    def _build_signal_payload(self, *, intent, features) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "intent": intent.model_dump(mode="json"),
+            "features": features.model_dump(mode="json"),
+        }
+        for key in ("selected_setup", "rule_trace", "setup_context"):
+            value = intent.metadata.get(key)
+            if value is not None:
+                payload[key] = value
+        return payload
 
     async def _persist_execution_result(
         self,

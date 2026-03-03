@@ -5,6 +5,7 @@ from trading_bot.adapters.exchanges.bybit.normalizers import (
     normalize_open_interest,
     normalize_private_message,
     normalize_public_message,
+    normalize_rest_klines,
 )
 from trading_bot.marketdata.events import KlineEvent, OpenInterestEvent, OrderBookEvent, OrderUpdateEvent, TradeEvent, WalletEvent
 
@@ -81,7 +82,7 @@ def test_normalize_public_messages() -> None:
     assert trades[0].side == "Buy"
     assert isinstance(klines[0], KlineEvent)
     assert klines[0].symbol == "BTCUSDT"
-    assert klines[0].interval == "1"
+    assert klines[0].interval == "1m"
 
 
 def test_normalize_open_interest_payload() -> None:
@@ -92,6 +93,17 @@ def test_normalize_open_interest_payload() -> None:
 
     assert isinstance(event, OpenInterestEvent)
     assert str(event.open_interest) == "123.4"
+    assert event.interval == "5m"
+
+
+def test_normalize_rest_klines_canonicalizes_intervals() -> None:
+    events = normalize_rest_klines(
+        "BTCUSDT",
+        interval="5",
+        rows=[["1710000000000", "100", "101", "99", "100.5", "12.3", "1230"]],
+    )
+
+    assert events[0].interval == "5m"
 
 
 def test_normalize_private_messages() -> None:

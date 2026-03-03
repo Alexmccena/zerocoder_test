@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -20,6 +20,7 @@ from trading_bot.marketdata.events import (
     TradeEvent,
     WalletEvent,
 )
+from trading_bot.timeframes import canonicalize_interval, interval_to_minutes
 
 
 def to_decimal(value: Any, default: str = "0") -> Decimal:
@@ -188,7 +189,7 @@ def normalize_public_message(message: dict[str, Any]) -> list[object]:
                 exchange_name=ExchangeName.BYBIT,
                 symbol=row.get("symbol", topic_symbol or ""),
                 event_ts=ts,
-                interval=str(row.get("interval", topic_interval or "")),
+                interval=canonicalize_interval(row.get("interval", topic_interval or "")),
                 start_at=from_millis(row["start"]),
                 end_at=from_millis(row["end"]),
                 open_price=to_decimal(row["open"]),
@@ -228,7 +229,7 @@ def normalize_open_interest(symbol: str, payload: dict[str, Any]) -> OpenInteres
         symbol=symbol,
         event_ts=from_millis(row.get("timestamp", 0)),
         open_interest=to_decimal(row.get("openInterest", "0")),
-        interval=row.get("intervalTime"),
+        interval=canonicalize_interval(row.get("intervalTime", "5m")),
         raw_payload=row,
     )
 
@@ -247,6 +248,58 @@ def normalize_funding_rate(symbol: str, payload: dict[str, Any]) -> FundingRateE
         next_funding_at=from_millis(next_funding) if next_funding not in (None, "") else None,
         raw_payload=row,
     )
+
+
+def normalize_rest_klines(symbol: str, *, interval: str | int, rows: list[Any]) -> list[KlineEvent]:
+    canonical_interval = canonicalize_interval(interval)
+    interval_minutes = interval_to_minutes(canonical_interval)
+    events: list[KlineEvent] = []
+    for row in rows:
+        if isinstance(row, dict):
+            start_raw = row.get("start") or row.get("startTime")
+            end_raw = row.get("end") or row.get("endTime")
+            open_price = row.get("open")
+            high_price = row.get("high")
+            low_price = row.get("low")
+            close_price = row.get("close")
+            volume = row.get("volume")
+            turnover = row.get("turnover")
+        else:
+            values = list(row)
+            if len(values) < 6:
+                continue
+            start_raw = values[0]
+            end_raw = None
+            open_price = values[1]
+            high_price = values[2]
+            low_price = values[3]
+            close_price = values[4]
+            volume = values[5]
+            turnover = values[6] if len(values) > 6 else None
+
+        if start_raw in (None, ""):
+            continue
+        start_at = from_millis(start_raw)
+        end_at = from_millis(end_raw) if end_raw not in (None, "") else start_at + timedelta(minutes=interval_minutes)
+        events.append(
+            KlineEvent(
+                exchange_name=ExchangeName.BYBIT,
+                symbol=symbol,
+                event_ts=end_at,
+                interval=canonical_interval,
+                start_at=start_at,
+                end_at=end_at,
+                open_price=to_decimal(open_price, "0"),
+                high_price=to_decimal(high_price, "0"),
+                low_price=to_decimal(low_price, "0"),
+                close_price=to_decimal(close_price, "0"),
+                volume=to_decimal(volume, "0"),
+                turnover=to_decimal(turnover) if turnover not in (None, "") else None,
+                is_closed=True,
+                raw_payload=row if isinstance(row, dict) else {"row": values},
+            )
+        )
+    return events
 
 
 def normalize_private_message(message: dict[str, Any]) -> list[object]:

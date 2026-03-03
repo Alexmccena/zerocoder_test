@@ -1,4 +1,4 @@
-config_version: 2
+config_version: 3
 
 runtime:
   service_name: trading-bot
@@ -25,9 +25,9 @@ symbols:
 market_data:
   orderbook_depth: 50
   kline_intervals:
-    - 1
-    - 5
-    - 15
+    - 1m
+    - 5m
+    - 15m
   enable_trades: true
   enable_ticker: true
   enable_liquidations: true
@@ -55,9 +55,62 @@ observability:
 strategy:
   name: phase3_placeholder
   default_timeframe: 1m
-  placeholder_signal_threshold_bps: 8
-  placeholder_min_imbalance: 0.10
-  placeholder_max_hold_closed_klines: 3
+  placeholder:
+    signal_threshold_bps: 8
+    min_imbalance: 0.10
+    max_hold_closed_klines: 3
+  smc_scalper_v1:
+    bias_timeframe: 15m
+    structure_timeframe: 5m
+    entry_timeframe: 1m
+    history:
+      entry_bars: 160
+      structure_bars: 96
+      bias_bars: 64
+      orderbook_snapshots: 120
+      oi_points: 32
+      liquidation_events: 200
+    structure:
+      swing_lookback_bars: 2
+      min_break_bps: 2
+      max_signal_age_bars: 6
+    sweep:
+      lookback_bars: 20
+      reclaim_within_bars: 2
+      min_penetration_bps: 3
+    fvg:
+      min_gap_bps: 2
+      max_age_bars: 8
+    order_block:
+      impulse_displacement_bps: 15
+      max_age_bars: 12
+    orderbook:
+      imbalance_levels: 5
+      min_abs_imbalance: 0.12
+      wall_distance_bps: 20
+      wall_size_vs_median: 3.0
+      wall_min_persistence_snapshots: 3
+    open_interest:
+      lookback_points: 3
+      min_delta_bps: 5
+    funding:
+      enabled: true
+      adverse_threshold: 0.0005
+      missing_is_neutral: true
+    liquidations:
+      enabled: false
+      burst_window_seconds: 5
+      min_same_side_events: 3
+      missing_is_neutral: true
+    confirmations:
+      min_support_count: 2
+    entry:
+      mode: market_first
+      allow_limit_retest: false
+      max_setup_age_bars: 3
+    exit:
+      max_hold_bars: 10
+      invalidation_buffer_bps: 2
 
 risk:
   max_open_positions: 2

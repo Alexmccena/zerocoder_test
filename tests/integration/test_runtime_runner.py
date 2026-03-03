@@ -19,11 +19,13 @@ from trading_bot.observability.metrics import AppMetrics
 from trading_bot.paper.venue import PaperVenue
 from trading_bot.replay.feed import ReplayFeed
 from trading_bot.replay.reader import ReplayReader
+from trading_bot.replay.sample_archive import build_smc_sample_archive
 from trading_bot.risk.basic import BasicRiskEngine
 from trading_bot.runtime.clock import BacktestClock
 from trading_bot.runtime.runner import RuntimeRunner
 from trading_bot.runtime.state import RuntimeStateStore
 from trading_bot.strategies.phase3_placeholder import Phase3PlaceholderStrategy
+from trading_bot.strategies.smc_scalper_v1 import SmcScalperV1Strategy
 
 
 def _write_parquet(root: Path, *, event_type: str, symbol: str, rows: list[dict[str, Any]]) -> None:
@@ -179,6 +181,72 @@ def _build_settings(source_root: Path) -> AppSettings:
                 "placeholder_signal_threshold_bps": 8.0,
                 "placeholder_min_imbalance": 0.10,
                 "placeholder_max_hold_closed_klines": 3,
+            },
+            "risk": {
+                "max_open_positions": 2,
+                "risk_per_trade": 0.0025,
+                "max_daily_loss": 0.015,
+                "stale_market_data_seconds": 5,
+                "one_position_per_symbol": True,
+            },
+            "llm": {"enabled": False, "provider": "none", "model_name": "", "timeout_seconds": 10},
+        }
+    )
+
+
+def _build_smc_settings(source_root: Path) -> AppSettings:
+    return AppSettings.model_validate(
+        {
+            "runtime": {
+                "service_name": "trading-bot",
+                "mode": "backtest",
+                "environment": "test",
+            },
+            "exchange": {
+                "primary": "bybit",
+                "market_type": "linear_perp",
+                "position_mode": "one_way",
+                "account_alias": "default",
+                "testnet": True,
+            },
+            "symbols": {"allowlist": ["BTCUSDT"]},
+            "storage": {
+                "postgres_dsn": "postgresql+asyncpg://user:pass@localhost:5432/app",
+                "redis_dsn": "redis://localhost:6379/0",
+            },
+            "observability": {"log_level": "INFO", "http_host": "127.0.0.1", "http_port": 8080},
+            "execution": {
+                "default_entry_type": "market",
+                "market_slippage_guard_bps": 10.0,
+                "max_market_data_age_ms": 10_000,
+            },
+            "paper": {
+                "initial_equity_usdt": "10000",
+                "default_order_notional_usdt": "100",
+                "fill_latency_ms": 0,
+            },
+            "replay": {
+                "source_root": str(source_root),
+                "start_at": None,
+                "end_at": None,
+                "speed": 1.0,
+                "warmup_minutes": 0,
+                "fail_on_gap": True,
+                "max_gap_seconds": 120,
+            },
+            "strategy": {
+                "name": "smc_scalper_v1",
+                "smc_scalper_v1": {
+                    "history": {
+                        "entry_bars": 24,
+                        "structure_bars": 16,
+                        "bias_bars": 16,
+                        "orderbook_snapshots": 8,
+                        "oi_points": 5,
+                    },
+                    "sweep": {"lookback_bars": 6},
+                    "exit": {"max_hold_bars": 4},
+                },
             },
             "risk": {
                 "max_open_positions": 2,
@@ -448,3 +516,92 @@ async def test_runtime_runner_backtest_e2e_with_replay_archive(tmp_path: Path) -
     assert json.loads(summary_out.read_text(encoding="utf-8")) == summary
     assert any(key.endswith(":status") for key in redis.values)
     assert any(key.endswith(":snapshot:BTCUSDT") for key in redis.values)
+
+
+@pytest.mark.asyncio
+async def test_runtime_runner_backtest_e2e_with_smc_sample_archive(tmp_path: Path) -> None:
+    archive_root = tmp_path / "smc-archive"
+    build_smc_sample_archive(archive_root)
+    settings = _build_smc_settings(archive_root)
+
+    replay_reader = ReplayReader(
+        source_root=archive_root,
+        start_at=None,
+        end_at=None,
+        fail_on_gap=True,
+        max_gap_seconds=120,
+    )
+    market_feed = ReplayFeed(reader=replay_reader, strategy_start_at=None)
+    state_store = RuntimeStateStore(run_mode=RunMode.BACKTEST, execution_venue=ExecutionVenueKind.PAPER)
+    snapshot_builder = MarketSnapshotBuilder(stale_after_seconds=settings.risk.stale_market_data_seconds)
+    feature_provider = FeatureProvider(config=settings)
+    strategy = SmcScalperV1Strategy(config=settings, runtime_state_provider=lambda: state_store.state)
+    risk_engine = BasicRiskEngine(config=settings)
+    execution_engine = ExecutionEngine(venue=PaperVenue(config=settings, metrics=AppMetrics()))
+
+    run_sessions = InMemoryRunSessions()
+    config_snapshots = InMemoryConfigSnapshots()
+    instruments = InMemoryInstruments()
+    signal_events = InMemorySignalEvents()
+    risk_decisions = InMemoryRiskDecisions()
+    orders = InMemoryOrders()
+    fills = InMemoryFills()
+    positions = InMemoryPositions()
+    account_snapshots = InMemoryAccountSnapshots()
+    pnl_snapshots = InMemoryPnlSnapshots()
+    redis = FakeRedis()
+    summary_out = tmp_path / "smc-summary.json"
+
+    runner = RuntimeRunner(
+        config=settings,
+        config_hash="smc-config-hash",
+        logger=structlog.get_logger("runtime-smc-test"),
+        metrics=AppMetrics(),
+        redis_client=redis,  # type: ignore[arg-type]
+        market_feed=market_feed,
+        clock=BacktestClock(),
+        state_store=state_store,
+        snapshot_builder=snapshot_builder,
+        feature_provider=feature_provider,
+        strategy=strategy,
+        risk_engine=risk_engine,
+        execution_engine=execution_engine,
+        run_sessions=run_sessions,  # type: ignore[arg-type]
+        config_snapshots=config_snapshots,  # type: ignore[arg-type]
+        instruments=instruments,  # type: ignore[arg-type]
+        signal_events=signal_events,  # type: ignore[arg-type]
+        risk_decisions=risk_decisions,  # type: ignore[arg-type]
+        orders=orders,  # type: ignore[arg-type]
+        fills=fills,  # type: ignore[arg-type]
+        positions=positions,  # type: ignore[arg-type]
+        account_snapshots=account_snapshots,  # type: ignore[arg-type]
+        pnl_snapshots=pnl_snapshots,  # type: ignore[arg-type]
+        strategy_start_at=None,
+    )
+
+    summary = await runner.run(summary_out=summary_out)
+
+    assert run_sessions.records[0].status == "completed"
+    assert run_sessions.records[0].summary_json == summary
+    assert config_snapshots.items[0]["config_hash"] == "smc-config-hash"
+    assert len(instruments.items) == 1
+
+    assert [item["signal_type"] for item in signal_events.items] == ["open_long", "close_long"]
+    assert [item["decision"] for item in risk_decisions.items] == ["allow", "allow"]
+    assert signal_events.items[0]["payload_json"]["selected_setup"]["side"] == "long"
+    assert "confirmations_ok" in signal_events.items[0]["payload_json"]["rule_trace"]
+
+    assert len(orders.history) == 4
+    assert len(fills.items) == 2
+    assert [fill.side for fill in fills.items] == ["buy", "sell"]
+
+    assert len(positions.history) == 2
+    assert positions.history[0].status == "open"
+    assert positions.history[1].status == "closed"
+    assert state_store.state.open_positions == {}
+
+    assert summary["total_signals"] == 2
+    assert summary["total_orders"] == 4
+    assert summary["total_fills"] == 2
+    assert summary_out.exists()
+    assert json.loads(summary_out.read_text(encoding="utf-8")) == summary
