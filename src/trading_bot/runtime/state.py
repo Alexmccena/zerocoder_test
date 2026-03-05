@@ -10,6 +10,7 @@ from trading_bot.domain.models import (
     RuntimeState,
     VenueConnectivityState,
 )
+from trading_bot.marketdata import events as _marketdata_events  # noqa: F401
 
 
 class RuntimeStateStore:

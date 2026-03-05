@@ -14,6 +14,7 @@ from trading_bot.domain.enums import RiskDecisionType, RunMode
 from trading_bot.domain.models import ExecutionResult, MarketSnapshot, PnlSnapshot, RiskDecision
 from trading_bot.execution.engine import ExecutionEngine
 from trading_bot.live.recovery import recover_live_runtime_state
+from trading_bot.llm.service import LLMAdvisoryService
 from trading_bot.marketdata.events import KlineEvent, MarketEvent
 from trading_bot.marketdata.snapshots import FeatureProvider, MarketSnapshotBuilder
 from trading_bot.observability.metrics import AppMetrics
@@ -72,6 +73,7 @@ class RuntimeRunner:
         strategy_start_at: datetime | None,
         control_plane: RuntimeControlPlane | None = None,
         alert_sink: OperationalAlertSink | None = None,
+        llm_service: LLMAdvisoryService | None = None,
     ) -> None:
         self.config = config
         self.config_hash = config_hash
@@ -99,9 +101,12 @@ class RuntimeRunner:
         self.strategy_start_at = strategy_start_at
         self.control_plane = control_plane
         self.alert_sink = alert_sink
+        self.llm_service = llm_service
         self._redis_degraded = False
         self._reconciler = RuntimeReconciler(execution_engine=execution_engine)
         self._last_reconciliation_at: datetime | None = None
+        self._next_llm_periodic_at: datetime | None = None
+        self._latest_features_by_symbol: dict[str, dict[str, object]] = {}
 
     async def run(self, *, duration_seconds: int | None = None, summary_out: Path | None = None) -> dict[str, object]:
         self.metrics.record_runtime_run(self.config.runtime.mode.value)
@@ -113,9 +118,16 @@ class RuntimeRunner:
         )
         state = self.state_store
         state.attach_run_session(run_session.id)
+        if self.llm_service is not None:
+            await self.llm_service.start(run_session_id=run_session.id)
         if self.control_plane is not None:
             started_at = getattr(run_session, "started_at", None) or getattr(run_session, "created_at")
             self.control_plane.bind_run(started_at=started_at)
+        else:
+            started_at = getattr(run_session, "started_at", None) or getattr(run_session, "created_at", None)
+        if started_at is None:
+            started_at = datetime.now(timezone.utc)
+        self._configure_llm_periodic(started_at=started_at)
 
         total_signals = 0
         total_orders = 0
@@ -177,6 +189,12 @@ class RuntimeRunner:
                     f"environment={self.config.runtime.environment.value} "
                     f"run_session_id={run_session.id}"
                 ),
+            )
+            self._queue_llm_workflow(
+                workflow="pre_session",
+                run_session_id=run_session.id,
+                state=state,
+                as_of=started_at,
             )
 
             for event in await self.market_feed.prime(self.config.symbols.allowlist):
@@ -245,6 +263,11 @@ class RuntimeRunner:
             )
             return summary
         finally:
+            if self.llm_service is not None:
+                try:
+                    await self.llm_service.stop()
+                except Exception:
+                    self.logger.warning("llm_shutdown_failed", run_session_id=state.state.run_session_id)
             await self.execution_engine.close()
             await self.market_feed.close()
 
@@ -304,11 +327,18 @@ class RuntimeRunner:
         if control_pnl is not None:
             latest_pnl = control_pnl
         await self._publish_runtime_state(run_session_id, state)
+        self._queue_periodic_llm_if_due(
+            run_session_id=run_session_id,
+            state=state,
+            as_of=event.event_ts,
+            symbol=event.symbol,
+        )
 
         if not evaluate_strategy or not self._should_evaluate_strategy(event=event, snapshot=snapshot):
             return signals, orders_count, fills_count, latest_pnl
 
         features = self.feature_provider.compute(snapshot)
+        self._latest_features_by_symbol[snapshot.symbol] = features.model_dump(mode="json")
         intents = await self.strategy.evaluate(snapshot, features)
         for intent in intents:
             signals += 1
@@ -344,6 +374,14 @@ class RuntimeRunner:
                 decision=decision,
             )
             if decision.decision == RiskDecisionType.HALT:
+                self._queue_llm_workflow(
+                    workflow="risk_halt",
+                    run_session_id=run_session_id,
+                    state=state,
+                    as_of=event.event_ts,
+                    symbol=intent.symbol,
+                    extra={"risk_halt_reasons": list(decision.reasons)},
+                )
                 await self._emit_alert(
                     kind="risk_halt",
                     severity="critical",
@@ -423,12 +461,26 @@ class RuntimeRunner:
         if result.position is not None:
             positions.append(result.position)
         for position in positions:
+            was_open = state.state.open_positions.get(position.symbol) is not None
             if position.status == "open":
                 await self.positions.upsert_snapshot(run_session_id=run_session_id, position=position)
             else:
                 await self.positions.close_position(run_session_id=run_session_id, position=position)
             self._update_loss_streak_state(state=state, position=position)
             state.update_position(position)
+            if was_open and position.status != "open":
+                self._queue_llm_workflow(
+                    workflow="post_trade",
+                    run_session_id=run_session_id,
+                    state=state,
+                    as_of=position.closed_at or position.updated_at,
+                    symbol=position.symbol,
+                    extra={
+                        "closed_reason": position.closed_reason,
+                        "realized_pnl": str(position.realized_pnl),
+                        "side": position.side,
+                    },
+                )
         if result.account_state is not None:
             state.set_account(result.account_state)
             self._ensure_day_start_equity(state=state, as_of=result.account_state.updated_at)
@@ -654,3 +706,117 @@ class RuntimeRunner:
         if self.alert_sink is None:
             return
         await self.alert_sink.broadcast(kind=kind, severity=severity, text=text)
+
+    def _configure_llm_periodic(self, *, started_at: datetime) -> None:
+        if self.llm_service is None:
+            return
+        if not self.config.llm.enabled or not self.config.llm.workflows.periodic_enabled:
+            return
+        cadence = timedelta(minutes=self.config.llm.workflows.periodic_interval_minutes)
+        self._next_llm_periodic_at = started_at + cadence
+
+    def _queue_periodic_llm_if_due(
+        self,
+        *,
+        run_session_id: str,
+        state: RuntimeStateStore,
+        as_of: datetime,
+        symbol: str | None,
+    ) -> None:
+        if self._next_llm_periodic_at is None:
+            return
+        if as_of < self._next_llm_periodic_at:
+            return
+        self._queue_llm_workflow(
+            workflow="periodic",
+            run_session_id=run_session_id,
+            state=state,
+            as_of=as_of,
+            symbol=symbol,
+        )
+        cadence = timedelta(minutes=self.config.llm.workflows.periodic_interval_minutes)
+        next_at = self._next_llm_periodic_at
+        while next_at is not None and next_at <= as_of:
+            next_at = next_at + cadence
+        self._next_llm_periodic_at = next_at
+
+    def _queue_llm_workflow(
+        self,
+        *,
+        workflow: str,
+        run_session_id: str,
+        state: RuntimeStateStore,
+        as_of: datetime,
+        symbol: str | None = None,
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        if self.llm_service is None:
+            return
+        payload = self._build_llm_payload(
+            run_session_id=run_session_id,
+            state=state,
+            as_of=as_of,
+            symbol=symbol,
+            extra=extra,
+        )
+        self.llm_service.enqueue_workflow(
+            workflow=workflow,
+            payload=payload,
+            symbol=symbol,
+            requested_at=as_of,
+        )
+
+    def _build_llm_payload(
+        self,
+        *,
+        run_session_id: str,
+        state: RuntimeStateStore,
+        as_of: datetime,
+        symbol: str | None,
+        extra: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        snapshots: dict[str, object] = {}
+        for item_symbol, snapshot in state.state.market_state_by_symbol.items():
+            snapshots[item_symbol] = {
+                "as_of": snapshot.as_of.isoformat(),
+                "last_trade_price": (
+                    str(snapshot.last_trade.price)
+                    if snapshot.last_trade is not None and getattr(snapshot.last_trade, "price", None) is not None
+                    else None
+                ),
+                "open_interest": (
+                    str(snapshot.open_interest.open_interest)
+                    if snapshot.open_interest is not None and getattr(snapshot.open_interest, "open_interest", None) is not None
+                    else None
+                ),
+                "funding_rate": (
+                    str(snapshot.funding_rate.funding_rate)
+                    if snapshot.funding_rate is not None and getattr(snapshot.funding_rate, "funding_rate", None) is not None
+                    else None
+                ),
+                "data_is_stale": snapshot.data_is_stale,
+            }
+        payload: dict[str, object] = {
+            "run_session_id": run_session_id,
+            "mode": self.config.runtime.mode.value,
+            "environment": self.config.runtime.environment.value,
+            "as_of": as_of.isoformat(),
+            "symbol_focus": symbol,
+            "market": snapshots,
+            "open_positions": [position.model_dump(mode="json") for position in state.state.open_positions.values()],
+            "open_orders": [order.model_dump(mode="json") for order in state.state.open_orders.values()],
+            "risk_flags": {
+                "last_kill_switch_reason": state.state.kill_switch_state.last_reason,
+                "protection_failure_active": state.state.kill_switch_state.protection_failure_active,
+                "cooldown_until": (
+                    state.state.kill_switch_state.consecutive_loss_cooldown_until.isoformat()
+                    if state.state.kill_switch_state.consecutive_loss_cooldown_until
+                    else None
+                ),
+                "consecutive_losses": state.state.loss_streak_state.consecutive_losses,
+            },
+            "features": dict(self._latest_features_by_symbol),
+        }
+        if extra:
+            payload["extra"] = extra
+        return payload

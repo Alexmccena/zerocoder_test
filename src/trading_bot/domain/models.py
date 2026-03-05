@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -199,6 +199,12 @@ class RiskDecision(DomainModel):
 
 
 class AdvisorOutput(DomainModel):
+    action: Literal["long", "short", "no_trade"] = "no_trade"
+    confidence_pct: float = Field(default=0.0, ge=0, le=100)
+    market_regime: str = "unknown"
+    smart_money_signal: str = "neutral"
+    trade_idea: dict[str, Any] | None = None
+    evidence: list[str] = Field(default_factory=list)
     market_bias: str = "neutral"
     setup_quality_score: float = Field(default=0.0, ge=0, le=1)
     warnings: list[str] = Field(default_factory=list)

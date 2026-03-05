@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 import structlog
 
 from trading_bot.alerts.service import TelegramAlertService, TelegramCommandHandler
@@ -26,6 +27,27 @@ class FakeTelegramClient:
 
     async def close(self) -> None:
         return None
+
+
+class FakeLLMService:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+        self.playbook_text: str | None = None
+
+    async def operator_analyze(self, *, prompt: str, payload: dict[str, object], requested_at) -> str:
+        self.prompts.append(prompt)
+        return f"Analyze\nprompt: {prompt}"
+
+    async def playbook_set(self, *, text_or_json: str, source: str = "telegram") -> str:
+        self.playbook_text = text_or_json
+        return "Playbook updated."
+
+    async def playbook_show(self) -> str:
+        return "Playbook is not set." if self.playbook_text is None else f"Playbook\ntext: {self.playbook_text}"
+
+    async def playbook_clear(self) -> str:
+        self.playbook_text = None
+        return "Playbook cleared."
 
 
 def _build_settings(min_severity: str = "info") -> AppSettings:
@@ -85,7 +107,8 @@ def _build_control_plane(settings: AppSettings) -> RuntimeControlPlane:
     return RuntimeControlPlane(config=settings, state_store=state_store)
 
 
-def test_telegram_command_handler_authorizes_and_formats_status() -> None:
+@pytest.mark.asyncio
+async def test_telegram_command_handler_authorizes_and_formats_status() -> None:
     settings = _build_settings()
     control_plane = _build_control_plane(settings)
     handler = TelegramCommandHandler(
@@ -94,10 +117,10 @@ def test_telegram_command_handler_authorizes_and_formats_status() -> None:
         metrics=AppMetrics(),
     )
 
-    authorized = handler.handle_message(
+    authorized = await handler.handle_message(
         TelegramInboundMessage(update_id=1, chat_id=1001, user_id=2002, text="/status@paperbot")
     )
-    unauthorized = handler.handle_message(
+    unauthorized = await handler.handle_message(
         TelegramInboundMessage(update_id=2, chat_id=9999, user_id=2002, text="/status")
     )
 
@@ -126,3 +149,39 @@ async def test_telegram_alert_service_filters_by_severity() -> None:
     await service.broadcast(kind="risk_halt", severity="critical", text="risk halt")
 
     assert client.sent == [(1001, "risk halt"), (1002, "risk halt")]
+
+
+@pytest.mark.asyncio
+async def test_telegram_command_handler_supports_analyze_and_playbook() -> None:
+    settings = _build_settings()
+    control_plane = _build_control_plane(settings)
+    llm = FakeLLMService()
+    handler = TelegramCommandHandler(
+        config=settings,
+        control_plane=control_plane,
+        metrics=AppMetrics(),
+        llm_service=llm,
+    )
+
+    analyze = await handler.handle_message(
+        TelegramInboundMessage(update_id=3, chat_id=1001, user_id=2002, text="/analyze BTC momentum?")
+    )
+    playbook_set = await handler.handle_message(
+        TelegramInboundMessage(update_id=4, chat_id=1001, user_id=2002, text="/playbook set avoid chop")
+    )
+    playbook_show = await handler.handle_message(
+        TelegramInboundMessage(update_id=5, chat_id=1001, user_id=2002, text="/playbook show")
+    )
+    playbook_clear = await handler.handle_message(
+        TelegramInboundMessage(update_id=6, chat_id=1001, user_id=2002, text="/playbook clear")
+    )
+
+    assert analyze is not None
+    assert "prompt: BTC momentum?" in (analyze.reply_text or "")
+    assert llm.prompts == ["BTC momentum?"]
+    assert playbook_set is not None
+    assert playbook_set.reply_text == "Playbook updated."
+    assert playbook_show is not None
+    assert "avoid chop" in (playbook_show.reply_text or "")
+    assert playbook_clear is not None
+    assert playbook_clear.reply_text == "Playbook cleared."

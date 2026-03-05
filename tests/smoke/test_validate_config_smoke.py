@@ -16,6 +16,7 @@ def test_validate_config_smoke(monkeypatch) -> None:
     monkeypatch.setenv("TB_LOG_LEVEL", "INFO")
     monkeypatch.setenv("TB_HTTP_HOST", "0.0.0.0")
     monkeypatch.setenv("TB_HTTP_PORT", "8080")
+    monkeypatch.setenv("TB_OPENROUTER_API_KEY", "placeholder")
 
     result = runner.invoke(app, ["validate-config"])
 

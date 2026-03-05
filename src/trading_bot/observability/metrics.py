@@ -231,6 +231,42 @@ class AppMetrics:
             "Estimated live total open exposure in USDT.",
             registry=self.registry,
         )
+        self.llm_requests_total = Counter(
+            "tb_llm_requests_total",
+            "Number of LLM advisory requests.",
+            ["provider", "model", "status", "workflow"],
+            registry=self.registry,
+        )
+        self.llm_request_seconds = Histogram(
+            "tb_llm_request_seconds",
+            "Latency of LLM advisory requests.",
+            ["provider", "model", "workflow"],
+            registry=self.registry,
+        )
+        self.llm_tokens_total = Counter(
+            "tb_llm_tokens_total",
+            "LLM token usage by direction.",
+            ["provider", "model", "direction"],
+            registry=self.registry,
+        )
+        self.llm_cost_usd_total = Counter(
+            "tb_llm_cost_usd_total",
+            "LLM advisory cost in USD.",
+            ["provider", "model"],
+            registry=self.registry,
+        )
+        self.llm_budget_block_total = Counter(
+            "tb_llm_budget_block_total",
+            "Number of LLM calls skipped by budget guard.",
+            ["reason"],
+            registry=self.registry,
+        )
+        self.llm_parse_fail_total = Counter(
+            "tb_llm_parse_fail_total",
+            "Number of LLM parse failures by workflow.",
+            ["workflow"],
+            registry=self.registry,
+        )
 
     def record_app_start(self) -> None:
         self.app_start_total.inc()
@@ -346,6 +382,48 @@ class AppMetrics:
 
     def set_live_total_exposure_usdt(self, value: float) -> None:
         self.live_total_exposure_usdt.set(max(value, 0.0))
+
+    def record_llm_request(
+        self,
+        *,
+        provider: str,
+        model: str,
+        status: str,
+        workflow: str,
+        latency_seconds: float,
+    ) -> None:
+        self.llm_requests_total.labels(
+            provider=provider,
+            model=model,
+            status=status,
+            workflow=workflow,
+        ).inc()
+        if status == "ok":
+            self.llm_request_seconds.labels(
+                provider=provider,
+                model=model,
+                workflow=workflow,
+            ).observe(max(latency_seconds, 0.0))
+
+    def record_llm_tokens(
+        self,
+        *,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        self.llm_tokens_total.labels(provider=provider, model=model, direction="input").inc(max(input_tokens, 0))
+        self.llm_tokens_total.labels(provider=provider, model=model, direction="output").inc(max(output_tokens, 0))
+
+    def record_llm_cost(self, *, provider: str, model: str, cost_usd: float) -> None:
+        self.llm_cost_usd_total.labels(provider=provider, model=model).inc(max(cost_usd, 0.0))
+
+    def record_llm_budget_block(self, *, reason: str) -> None:
+        self.llm_budget_block_total.labels(reason=reason).inc()
+
+    def record_llm_parse_fail(self, *, workflow: str) -> None:
+        self.llm_parse_fail_total.labels(workflow=workflow).inc()
 
     def render(self) -> bytes:
         return generate_latest(self.registry)

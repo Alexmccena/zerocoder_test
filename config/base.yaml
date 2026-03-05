@@ -186,3 +186,27 @@ llm:
   provider: none
   model_name: ""
   timeout_seconds: 30
+  default_language: en
+  workflows:
+    pre_session_enabled: true
+    periodic_enabled: true
+    periodic_interval_minutes: 15
+    post_trade_enabled: true
+    risk_halt_enabled: true
+  budgets:
+    max_calls_per_hour: 24
+    max_calls_per_day: 240
+    max_input_tokens_per_day: 1500000
+    max_output_tokens_per_day: 300000
+    max_cost_usd_per_day: 20.0
+  routing:
+    active_stack: stack_a
+    stack_a:
+      analyst_model: deepseek/deepseek-chat-v3-0324:free
+      critic_model: qwen/qwen3-235b-a22b:free
+      reporter_model: meta-llama/llama-3.3-70b-instruct
+    stack_b:
+      analyst_model: mistralai/mistral-medium-3
+      critic_model: anthropic/claude-3.7-sonnet
+      reporter_model: google/gemini-2.0-flash-001
+  execution_mode: single_analyst

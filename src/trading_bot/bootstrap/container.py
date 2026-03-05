@@ -26,6 +26,7 @@ from trading_bot.domain.enums import ExecutionVenueKind, RunMode, ServiceStatus
 from trading_bot.domain.models import HealthReport
 from trading_bot.execution.engine import ExecutionEngine
 from trading_bot.live.venue import LiveVenue
+from trading_bot.llm import LLMAdvisoryService, OpenRouterProvider
 from trading_bot.marketdata.capture import CaptureService
 from trading_bot.marketdata.events import MarketEvent, PrivateStateEvent
 from trading_bot.marketdata.feed import BybitPublicMarketFeed
@@ -49,6 +50,7 @@ from trading_bot.storage.repositories import (
     ConfigSnapshotRepository,
     FillRepository,
     InstrumentRepository,
+    LLMAdviceRepository,
     OrderRepository,
     PnlSnapshotRepository,
     PositionRepository,
@@ -272,6 +274,7 @@ class RuntimeContainer:
     runtime_runner: RuntimeRunner
     control_plane: RuntimeControlPlane
     telegram_service: TelegramAlertService | None = None
+    llm_service: LLMAdvisoryService | None = None
     live_rest_client: BybitRestClient | None = None
     live_private_ws_client: BybitPrivateWebSocketClient | None = None
 
@@ -316,6 +319,7 @@ class RuntimeContainer:
         positions = PositionRepository(session_factory)
         account_snapshots = AccountSnapshotRepository(session_factory)
         pnl_snapshots = PnlSnapshotRepository(session_factory)
+        llm_advice = LLMAdviceRepository(session_factory)
 
         snapshot_builder = MarketSnapshotBuilder(stale_after_seconds=loaded.settings.risk.stale_market_data_seconds)
         feature_provider = FeatureProvider(config=loaded.settings)
@@ -375,6 +379,23 @@ class RuntimeContainer:
         else:
             venue = PaperVenue(config=loaded.settings, metrics=metrics)
         execution_engine = ExecutionEngine(config=loaded.settings, venue=venue)
+        llm_service: LLMAdvisoryService | None = None
+        if loaded.settings.llm.enabled and loaded.settings.llm.provider == "openrouter":
+            if env_settings.openrouter_api_key:
+                llm_service = LLMAdvisoryService(
+                    config=loaded.settings.llm,
+                    logger=logger,
+                    metrics=metrics,
+                    repository=llm_advice,
+                    provider=OpenRouterProvider(
+                        api_key=env_settings.openrouter_api_key,
+                        base_url=env_settings.openrouter_base_url,
+                        http_referer=env_settings.openrouter_http_referer,
+                        app_name=env_settings.openrouter_app_name,
+                    ),
+                )
+            else:
+                logger.warning("llm_openrouter_missing_api_key")
         runtime_runner = RuntimeRunner(
             config=loaded.settings,
             config_hash=loaded.fingerprint,
@@ -401,6 +422,7 @@ class RuntimeContainer:
             pnl_snapshots=pnl_snapshots,
             strategy_start_at=strategy_start_at,
             control_plane=control_plane,
+            llm_service=llm_service,
         )
         telegram_service = None
         if mode in {RunMode.PAPER, RunMode.LIVE} and loaded.settings.alerts.telegram.enabled and env_settings.telegram_bot_token is not None:
@@ -410,8 +432,11 @@ class RuntimeContainer:
                 logger=logger,
                 metrics=metrics,
                 control_plane=control_plane,
+                llm_service=llm_service,
             )
             runtime_runner.alert_sink = telegram_service
+            if llm_service is not None:
+                llm_service.set_alert_sink(telegram_service)
         return cls(
             bootstrap=env_settings,
             config=loaded.settings,
@@ -424,6 +449,7 @@ class RuntimeContainer:
             runtime_runner=runtime_runner,
             control_plane=control_plane,
             telegram_service=telegram_service,
+            llm_service=llm_service,
             live_rest_client=live_rest_client,
             live_private_ws_client=live_private_ws_client,
         )
@@ -517,6 +543,9 @@ class RuntimeContainer:
         try:
             if self.telegram_service is not None:
                 await self.telegram_service.close()
+            if self.llm_service is not None:
+                with suppress(Exception):
+                    await self.llm_service.stop()
             with suppress(Exception):
                 await self.runtime_runner.execution_engine.close()
             with suppress(Exception):

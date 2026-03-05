@@ -31,6 +31,10 @@ class BootstrapSettings(BaseSettings):
     bybit_api_key: str | None = None
     bybit_api_secret: str | None = None
     telegram_bot_token: str | None = None
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_http_referer: str | None = None
+    openrouter_app_name: str | None = None
 
     @property
     def resolved_config_file(self) -> Path:

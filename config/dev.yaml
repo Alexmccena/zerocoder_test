@@ -31,3 +31,28 @@ symbols:
 
 storage:
   market_archive_root: data/dev_market_archive
+
+llm:
+  enabled: true
+  provider: openrouter
+  timeout_seconds: 20
+  default_language: en
+  workflows:
+    pre_session_enabled: true
+    periodic_enabled: true
+    periodic_interval_minutes: 30
+    post_trade_enabled: true
+    risk_halt_enabled: true
+  budgets:
+    max_calls_per_hour: 8
+    max_calls_per_day: 40
+    max_input_tokens_per_day: 120000
+    max_output_tokens_per_day: 24000
+    max_cost_usd_per_day: 3.0
+  routing:
+    active_stack: stack_a
+    stack_a:
+      analyst_model: deepseek/deepseek-chat-v3-0324:free
+      critic_model: qwen/qwen3-235b-a22b:free
+      reporter_model: meta-llama/llama-3.3-70b-instruct
+  execution_mode: single_analyst

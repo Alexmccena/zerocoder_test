@@ -22,6 +22,7 @@ from trading_bot.storage.models import (
     ConfigSnapshotRecord,
     FillRecord,
     InstrumentRecord,
+    LLMAdviceRecord,
     OrderRecord,
     PnlSnapshotRecord,
     PositionRecord,
@@ -570,3 +571,58 @@ class PnlSnapshotRepository:
             await session.commit()
             await session.refresh(record)
         return record
+
+
+@dataclass(slots=True)
+class LLMAdviceRepository:
+    session_factory: async_sessionmaker[AsyncSession]
+
+    async def create_advice(
+        self,
+        *,
+        run_session_id: str | None,
+        symbol: str | None,
+        advice_type: str,
+        model_name: str,
+        input_hash: str,
+        output_json: dict[str, Any],
+    ) -> LLMAdviceRecord:
+        record = LLMAdviceRecord(
+            run_session_id=run_session_id,
+            symbol=symbol,
+            advice_type=advice_type,
+            model_name=model_name,
+            input_hash=input_hash,
+            output_json=output_json,
+        )
+        async with self.session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+        return record
+
+    async def get_latest_playbook(self, run_session_id: str | None) -> LLMAdviceRecord | None:
+        statement = select(LLMAdviceRecord).where(
+            LLMAdviceRecord.advice_type.in_(("playbook_set", "playbook_clear"))
+        )
+        if run_session_id is not None:
+            statement = statement.where(LLMAdviceRecord.run_session_id == run_session_id)
+        statement = statement.order_by(desc(LLMAdviceRecord.created_at)).limit(1)
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
+
+    async def list_recent_advice(
+        self,
+        *,
+        run_session_id: str | None,
+        advice_type: str | None = None,
+        limit: int = 20,
+    ) -> list[LLMAdviceRecord]:
+        statement = select(LLMAdviceRecord).order_by(desc(LLMAdviceRecord.created_at)).limit(max(limit, 1))
+        if run_session_id is not None:
+            statement = statement.where(LLMAdviceRecord.run_session_id == run_session_id)
+        if advice_type is not None:
+            statement = statement.where(LLMAdviceRecord.advice_type == advice_type)
+        async with self.session_factory() as session:
+            result = await session.scalars(statement)
+            return list(result)

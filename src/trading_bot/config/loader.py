@@ -223,6 +223,41 @@ def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
                 "funding_blackout_minutes_before": 5,
                 "funding_blackout_minutes_after": 5,
             },
+            "llm": {
+                "enabled": False,
+                "provider": "none",
+                "model_name": "",
+                "timeout_seconds": 30,
+                "default_language": "en",
+                "workflows": {
+                    "pre_session_enabled": True,
+                    "periodic_enabled": True,
+                    "periodic_interval_minutes": 15,
+                    "post_trade_enabled": True,
+                    "risk_halt_enabled": True,
+                },
+                "budgets": {
+                    "max_calls_per_hour": 24,
+                    "max_calls_per_day": 240,
+                    "max_input_tokens_per_day": 1_500_000,
+                    "max_output_tokens_per_day": 300_000,
+                    "max_cost_usd_per_day": 20.0,
+                },
+                "routing": {
+                    "active_stack": "stack_a",
+                    "stack_a": {
+                        "analyst_model": "deepseek/deepseek-chat-v3-0324:free",
+                        "critic_model": "qwen/qwen3-235b-a22b:free",
+                        "reporter_model": "meta-llama/llama-3.3-70b-instruct",
+                    },
+                    "stack_b": {
+                        "analyst_model": "mistralai/mistral-medium-3",
+                        "critic_model": "anthropic/claude-3.7-sonnet",
+                        "reporter_model": "google/gemini-2.0-flash-001",
+                    },
+                },
+                "execution_mode": "single_analyst",
+            },
         },
         raw,
     )
@@ -265,6 +300,8 @@ def validate_runtime_secrets(settings: AppSettings, env_settings: BootstrapSetti
             raise ConfigLoadError("TB_TELEGRAM_BOT_TOKEN is required when alerts.telegram.enabled=true")
         if not telegram.chat_ids:
             raise ConfigLoadError("alerts.telegram.chat_ids is required when alerts.telegram.enabled=true")
+    if settings.llm.enabled and settings.llm.provider == "openrouter" and not env_settings.openrouter_api_key:
+        raise ConfigLoadError("TB_OPENROUTER_API_KEY is required when llm.enabled=true and llm.provider=openrouter")
 
 
 def validate_live_config(settings: AppSettings) -> None:

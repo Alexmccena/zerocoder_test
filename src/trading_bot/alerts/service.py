@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Protocol
 
 from structlog.stdlib import BoundLogger
 
@@ -17,6 +18,22 @@ from trading_bot.runtime.control import (
 
 from .protocols import OperationalAlertSink
 from .telegram import TelegramBotClient, TelegramInboundMessage
+
+
+class AdvisoryCommandService(Protocol):
+    async def operator_analyze(
+        self,
+        *,
+        prompt: str,
+        payload: dict[str, object],
+        requested_at: datetime,
+    ) -> str: ...
+
+    async def playbook_set(self, *, text_or_json: str, source: str = "telegram") -> str: ...
+
+    async def playbook_show(self) -> str: ...
+
+    async def playbook_clear(self) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,15 +172,18 @@ class TelegramCommandHandler:
         config: AppSettings,
         control_plane: RuntimeControlPlane,
         metrics: AppMetrics,
+        llm_service: AdvisoryCommandService | None = None,
     ) -> None:
         self._control_plane = control_plane
         self._metrics = metrics
         self._telegram = config.alerts.telegram
+        self._llm_service = llm_service
 
-    def handle_message(self, message: TelegramInboundMessage) -> CommandHandlingResult | None:
-        command = self._parse_command(message.text)
-        if command is None:
+    async def handle_message(self, message: TelegramInboundMessage) -> CommandHandlingResult | None:
+        parsed = self._parse_command_and_args(message.text)
+        if parsed is None:
             return None
+        command, args = parsed
         if not self._is_authorized(chat_id=message.chat_id, user_id=message.user_id):
             self._metrics.record_telegram_command(command=command, outcome="unauthorized")
             return CommandHandlingResult(
@@ -243,12 +263,93 @@ class TelegramCommandHandler:
                 ),
                 broadcast_severity="warning",
             )
+        if command == "analyze":
+            if self._llm_service is None:
+                self._metrics.record_telegram_command(command=command, outcome="disabled")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="disabled",
+                    reply_text="LLM advisory is disabled.",
+                    broadcast_text=None,
+                )
+            prompt = args.strip()
+            if not prompt:
+                self._metrics.record_telegram_command(command=command, outcome="invalid")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="invalid",
+                    reply_text="Usage: /analyze <prompt>",
+                    broadcast_text=None,
+                )
+            analysis = await self._llm_service.operator_analyze(
+                prompt=prompt,
+                payload={
+                    "status_snapshot": format_status_snapshot(self._control_plane.build_status_snapshot()),
+                    "risk_snapshot": format_risk_snapshot(self._control_plane.build_risk_snapshot()),
+                },
+                requested_at=requested_at,
+            )
+            self._metrics.record_telegram_command(command=command, outcome="handled")
+            return CommandHandlingResult(
+                command=command,
+                outcome="handled",
+                reply_text=analysis,
+                broadcast_text=None,
+            )
+        if command == "playbook":
+            if self._llm_service is None:
+                self._metrics.record_telegram_command(command=command, outcome="disabled")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="disabled",
+                    reply_text="LLM advisory is disabled.",
+                    broadcast_text=None,
+                )
+            normalized_args = args.strip()
+            if normalized_args.startswith("set "):
+                payload = normalized_args[4:].strip()
+                reply = await self._llm_service.playbook_set(text_or_json=payload, source="telegram")
+                self._metrics.record_telegram_command(command="playbook_set", outcome="handled")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="handled",
+                    reply_text=reply,
+                    broadcast_text=_command_broadcast_text(command="playbook_set", outcome="handled", message=message),
+                )
+            if normalized_args == "show":
+                reply = await self._llm_service.playbook_show()
+                self._metrics.record_telegram_command(command="playbook_show", outcome="handled")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="handled",
+                    reply_text=reply,
+                    broadcast_text=None,
+                )
+            if normalized_args == "clear":
+                reply = await self._llm_service.playbook_clear()
+                self._metrics.record_telegram_command(command="playbook_clear", outcome="handled")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="handled",
+                    reply_text=reply,
+                    broadcast_text=_command_broadcast_text(command="playbook_clear", outcome="handled", message=message),
+                )
+            self._metrics.record_telegram_command(command=command, outcome="invalid")
+            return CommandHandlingResult(
+                command=command,
+                outcome="invalid",
+                reply_text="Usage: /playbook set <text|json> | /playbook show | /playbook clear",
+                broadcast_text=None,
+            )
 
         self._metrics.record_telegram_command(command=command, outcome="unknown")
         return CommandHandlingResult(
             command=command,
             outcome="unknown",
-            reply_text="Unknown command. Supported: /status /risk /pause /resume /flatten",
+            reply_text=(
+                "Unknown command. Supported: /status /risk /pause /resume /flatten "
+                "/analyze /playbook"
+            ),
             broadcast_text=None,
         )
 
@@ -259,13 +360,16 @@ class TelegramCommandHandler:
         user_allowed = not allowed_user_ids or user_id in allowed_user_ids
         return chat_allowed and user_allowed
 
-    def _parse_command(self, text: str) -> str | None:
+    def _parse_command_and_args(self, text: str) -> tuple[str, str] | None:
         stripped = text.strip()
         if not stripped.startswith("/"):
             return None
-        head = stripped.split(maxsplit=1)[0]
-        command = head[1:].split("@", maxsplit=1)[0].lower()
-        return command or None
+        without_slash = stripped[1:]
+        head, _, tail = without_slash.partition(" ")
+        command = head.split("@", maxsplit=1)[0].lower()
+        if not command:
+            return None
+        return command, tail.strip()
 
 
 class TelegramAlertService(OperationalAlertSink):
@@ -277,6 +381,7 @@ class TelegramAlertService(OperationalAlertSink):
         logger: BoundLogger,
         metrics: AppMetrics,
         control_plane: RuntimeControlPlane,
+        llm_service: AdvisoryCommandService | None = None,
         client: TelegramBotClient | None = None,
     ) -> None:
         self._telegram = config.alerts.telegram
@@ -290,6 +395,7 @@ class TelegramAlertService(OperationalAlertSink):
             config=config,
             control_plane=control_plane,
             metrics=metrics,
+            llm_service=llm_service,
         )
         self._offset: int | None = None
 
@@ -321,7 +427,7 @@ class TelegramAlertService(OperationalAlertSink):
         await self._client.close()
 
     async def _handle_message(self, message: TelegramInboundMessage) -> None:
-        result = self._handler.handle_message(message)
+        result = await self._handler.handle_message(message)
         if result is None:
             return
         if result.reply_text is not None:

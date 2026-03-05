@@ -314,11 +314,95 @@ class ReplayConfig(ConfigModel):
         return self
 
 
+class LLMWorkflowConfig(ConfigModel):
+    pre_session_enabled: bool = True
+    periodic_enabled: bool = True
+    periodic_interval_minutes: int = Field(default=15, ge=1)
+    post_trade_enabled: bool = True
+    risk_halt_enabled: bool = True
+
+
+class LLMBudgetsConfig(ConfigModel):
+    max_calls_per_hour: int = Field(default=24, ge=1)
+    max_calls_per_day: int = Field(default=240, ge=1)
+    max_input_tokens_per_day: int = Field(default=1_500_000, ge=1)
+    max_output_tokens_per_day: int = Field(default=300_000, ge=1)
+    max_cost_usd_per_day: float = Field(default=20.0, ge=0)
+
+
+class LLMModelStackConfig(ConfigModel):
+    analyst_model: str
+    critic_model: str
+    reporter_model: str
+
+
+class LLMRoutingConfig(ConfigModel):
+    active_stack: Literal["stack_a", "stack_b"] = "stack_a"
+    stack_a: LLMModelStackConfig = Field(
+        default_factory=lambda: LLMModelStackConfig(
+            analyst_model="deepseek/deepseek-chat-v3-0324:free",
+            critic_model="qwen/qwen3-235b-a22b:free",
+            reporter_model="meta-llama/llama-3.3-70b-instruct",
+        )
+    )
+    stack_b: LLMModelStackConfig = Field(
+        default_factory=lambda: LLMModelStackConfig(
+            analyst_model="mistralai/mistral-medium-3",
+            critic_model="anthropic/claude-3.7-sonnet",
+            reporter_model="google/gemini-2.0-flash-001",
+        )
+    )
+
+    @property
+    def active(self) -> LLMModelStackConfig:
+        return self.stack_a if self.active_stack == "stack_a" else self.stack_b
+
+
 class LLMConfig(ConfigModel):
     enabled: bool = False
-    provider: str
-    model_name: str
-    timeout_seconds: int = Field(ge=1)
+    provider: Literal["openrouter", "none"] = "none"
+    model_name: str = ""
+    timeout_seconds: int = Field(default=30, ge=1)
+    default_language: Literal["en", "ru", "bi"] = "en"
+    workflows: LLMWorkflowConfig = Field(default_factory=LLMWorkflowConfig)
+    budgets: LLMBudgetsConfig = Field(default_factory=LLMBudgetsConfig)
+    routing: LLMRoutingConfig = Field(default_factory=LLMRoutingConfig)
+    execution_mode: Literal["single_analyst"] = "single_analyst"
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_model_name(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        provider = str(normalized.get("provider", "none")).strip().lower()
+        normalized["provider"] = provider or "none"
+        legacy_model_name = str(normalized.get("model_name", "")).strip()
+        routing = dict(normalized.get("routing", {})) if isinstance(normalized.get("routing"), dict) else {}
+        if legacy_model_name:
+            active_stack = routing.get("active_stack", "stack_a")
+            stack_key = "stack_a" if active_stack == "stack_a" else "stack_b"
+            stack = dict(routing.get(stack_key, {})) if isinstance(routing.get(stack_key), dict) else {}
+            if not stack.get("analyst_model"):
+                stack["analyst_model"] = legacy_model_name
+            routing[stack_key] = stack
+        if routing:
+            normalized["routing"] = routing
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_enabled_provider(self) -> "LLMConfig":
+        if not self.enabled:
+            return self
+        if self.provider == "none":
+            raise ValueError("llm.provider must not be none when llm.enabled=true")
+        if not self.active_analyst_model:
+            raise ValueError("llm.routing active stack must define analyst_model")
+        return self
+
+    @property
+    def active_analyst_model(self) -> str:
+        return self.routing.active.analyst_model
 
 
 class AppSettings(ConfigModel):

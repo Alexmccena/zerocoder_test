@@ -33,6 +33,10 @@ Required environment variables:
 - `TB_BYBIT_API_KEY` (required only when `exchange.private_state_enabled=true`)
 - `TB_BYBIT_API_SECRET` (required only when `exchange.private_state_enabled=true`)
 - `TB_TELEGRAM_BOT_TOKEN` (required only when `alerts.telegram.enabled=true`)
+- `TB_OPENROUTER_API_KEY` (required only when `llm.enabled=true` and `llm.provider=openrouter`)
+- `TB_OPENROUTER_BASE_URL` (optional override, default `https://openrouter.ai/api/v1`)
+- `TB_OPENROUTER_HTTP_REFERER` (optional)
+- `TB_OPENROUTER_APP_NAME` (optional)
 
 ## Local commands
 
@@ -62,6 +66,10 @@ Supported commands:
 - `/pause`
 - `/resume`
 - `/flatten`
+- `/analyze <prompt>`
+- `/playbook set <text|json>`
+- `/playbook show`
+- `/playbook clear`
 
 Configure alert routing and command authorization in YAML:
 
@@ -124,6 +132,7 @@ This repository now contains the foundation layer, phase-2 capture, phase-3 pape
 - Parquet market archive writer
 - phase-3 paper venue, replay reader, and shared backtest runtime
 - phase-6 Bybit live execution venue, startup recovery, rollout guards, and `live-preflight`
+- phase-7 advisory LLM layer (OpenRouter provider, workflow queue, budget caps, Telegram analyze/playbook)
 
 Paper soak instructions live in [docs/runbooks/paper_soak.md](docs/runbooks/paper_soak.md).
 Live rollout runbooks:
@@ -131,3 +140,6 @@ Live rollout runbooks:
 - [docs/runbooks/live_testnet_smoke.md](docs/runbooks/live_testnet_smoke.md)
 - [docs/runbooks/live_mainnet_micro.md](docs/runbooks/live_mainnet_micro.md)
 - [docs/runbooks/live_restart_recovery.md](docs/runbooks/live_restart_recovery.md)
+LLM advisory runbook:
+
+- [docs/runbooks/llm_advisory.md](docs/runbooks/llm_advisory.md)

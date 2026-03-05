@@ -305,6 +305,37 @@ def test_enabled_telegram_alerts_require_bot_token(tmp_path: Path) -> None:
         load_app_config(settings, base_file=base)
 
 
+def test_enabled_openrouter_llm_requires_api_key(tmp_path: Path) -> None:
+    base = tmp_path / "base.yaml"
+    overlay = tmp_path / "dev.yaml"
+    base.write_text(
+        "\n".join(
+            [
+                "runtime: {service_name: trading-bot, mode: paper, environment: dev}",
+                "exchange: {primary: bybit, market_type: linear_perp, position_mode: one_way, account_alias: base, testnet: true}",
+                "symbols: {allowlist: [BTCUSDT]}",
+                "storage: {postgres_dsn: placeholder, redis_dsn: placeholder}",
+                "observability: {log_level: INFO, http_host: 127.0.0.1, http_port: 8000}",
+                "strategy: {name: foundation, default_timeframe: 1m}",
+                "risk: {max_open_positions: 2, risk_per_trade: 0.1, max_daily_loss: 0.2}",
+                "llm: {enabled: true, provider: openrouter, model_name: test/model, timeout_seconds: 10}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    overlay.write_text("{}", encoding="utf-8")
+    settings = BootstrapSettings(
+        env=Environment.DEV,
+        config_file=str(overlay),
+        postgres_dsn="postgresql+asyncpg://user:pass@localhost:5432/app",
+        redis_dsn="redis://localhost:6379/0",
+        _env_file=None,
+    )
+
+    with pytest.raises(ConfigLoadError, match="TB_OPENROUTER_API_KEY"):
+        load_app_config(settings, base_file=base)
+
+
 def test_alert_chat_ids_default_into_allowed_chat_ids(tmp_path: Path) -> None:
     base = tmp_path / "base.yaml"
     overlay = tmp_path / "dev.yaml"

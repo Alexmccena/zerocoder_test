@@ -22,6 +22,7 @@ def apply_env(monkeypatch) -> None:
     monkeypatch.setenv("TB_HTTP_PORT", "8080")
     monkeypatch.setenv("TB_BYBIT_API_KEY", "key")
     monkeypatch.setenv("TB_BYBIT_API_SECRET", "secret")
+    monkeypatch.setenv("TB_OPENROUTER_API_KEY", "placeholder")
 
 
 def test_validate_config_command(monkeypatch) -> None:
