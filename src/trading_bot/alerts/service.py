@@ -49,6 +49,7 @@ def format_status_snapshot(snapshot: RuntimeStatusSnapshot) -> str:
         "Status",
         f"service: {snapshot.service_name}",
         f"mode: {snapshot.run_mode}",
+        f"execution_venue: {snapshot.execution_venue}",
         f"environment: {snapshot.environment}",
         f"run_session_id: {snapshot.run_session_id or 'n/a'}",
         f"paused: {'yes' if snapshot.paused else 'no'}",
@@ -60,6 +61,19 @@ def format_status_snapshot(snapshot: RuntimeStatusSnapshot) -> str:
         f"open_orders: {snapshot.open_orders_count}",
         f"open_positions: {len(snapshot.open_positions)}",
     ]
+    if snapshot.execution_venue == "live":
+        lines.extend(
+            [
+                f"network: {snapshot.venue_network}",
+                f"execution_enabled: {'yes' if snapshot.live_execution_enabled else 'no'}",
+                f"allow_mainnet: {'yes' if snapshot.live_allow_mainnet else 'no'}",
+                f"live_symbol_allowlist: {','.join(snapshot.live_symbol_allowlist) or 'n/a'}",
+                f"private_ws_connected: {'yes' if snapshot.private_ws_connected else 'no'}",
+                f"last_private_event_at: {_format_datetime(snapshot.last_private_event_at)}",
+                f"last_successful_rest_sync_at: {_format_datetime(snapshot.last_successful_rest_sync_at)}",
+                f"live_total_exposure_usdt: {_format_decimal(snapshot.live_total_exposure_usdt)}",
+            ]
+        )
     if snapshot.open_positions:
         position_items = ", ".join(
             f"{position.symbol}:{position.side}:{_format_decimal(position.quantity)}"
@@ -114,6 +128,21 @@ def format_risk_snapshot(snapshot: RuntimeRiskSnapshot) -> str:
         f"last_kill_switch_reason: {snapshot.last_kill_switch_reason or 'none'}",
         f"protection_failure: {'yes' if snapshot.protection_failure_active else 'no'}",
     ]
+    if snapshot.live_execution_enabled is not None:
+        lines.extend(
+            [
+                f"live_execution_enabled: {'yes' if snapshot.live_execution_enabled else 'no'}",
+                f"live_allow_mainnet: {'yes' if snapshot.live_allow_mainnet else 'no'}",
+                f"live_max_order_notional_usdt: {_format_decimal(snapshot.live_max_order_notional_usdt)}",
+                f"live_max_position_notional_usdt: {_format_decimal(snapshot.live_max_position_notional_usdt)}",
+                f"live_max_total_exposure_usdt: {_format_decimal(snapshot.live_max_total_exposure_usdt)}",
+                (
+                    "live_private_state_stale_after_seconds: "
+                    f"{snapshot.live_private_state_stale_after_seconds if snapshot.live_private_state_stale_after_seconds is not None else 'n/a'}"
+                ),
+                f"live_active_stale_reason: {snapshot.live_active_stale_reason or 'none'}",
+            ]
+        )
     if snapshot.protection_failure_reason is not None:
         lines.append(f"protection_failure_reason: {snapshot.protection_failure_reason}")
     return "\n".join(lines)

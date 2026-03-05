@@ -76,6 +76,15 @@ async def _run_runtime(container, *, duration_seconds: int | None = None, summar
             await shutdown()
 
 
+async def _run_live_preflight(container) -> dict[str, object]:
+    try:
+        return await container.live_preflight()
+    finally:
+        shutdown = getattr(container, "shutdown", None)
+        if shutdown is not None:
+            await shutdown()
+
+
 @app.command("validate-config")
 def validate_config() -> None:
     loaded = _load_config_or_exit()
@@ -116,14 +125,28 @@ def run(
 ) -> None:
     loaded = _load_config_or_exit()
     effective_mode = mode or loaded.loaded.settings.runtime.mode
-    if effective_mode == RunMode.LIVE:
-        typer.echo("Runtime error: live mode is not implemented until phase 6.", err=True)
-        raise typer.Exit(code=1)
-    if effective_mode != RunMode.PAPER:
+    if effective_mode not in {RunMode.PAPER, RunMode.LIVE}:
         typer.echo("Runtime error: bot run currently supports only paper or live.", err=True)
         raise typer.Exit(code=1)
-    container = build_runtime_container(loaded.bootstrap, mode=effective_mode)
-    asyncio.run(_run_runtime(container, duration_seconds=duration_seconds))
+    try:
+        container = build_runtime_container(loaded.bootstrap, mode=effective_mode)
+        asyncio.run(_run_runtime(container, duration_seconds=duration_seconds))
+    except Exception as exc:
+        typer.echo(f"Runtime error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("live-preflight")
+def live_preflight() -> None:
+    overrides: dict[str, object] = {"runtime": {"mode": "live"}}
+    loaded = _load_config_or_exit(overrides=overrides)
+    try:
+        container = build_runtime_container(loaded.bootstrap, mode=RunMode.LIVE)
+        summary = asyncio.run(_run_live_preflight(container))
+    except Exception as exc:
+        typer.echo(f"live-preflight failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(json.dumps(summary, indent=2))
 
 
 @app.command("soak-paper")

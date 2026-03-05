@@ -284,6 +284,20 @@ class PaperConfig(ConfigModel):
     allow_partial_limit_fills: bool = True
 
 
+class LiveConfig(ConfigModel):
+    execution_enabled: bool = False
+    allow_mainnet: bool = False
+    symbol_allowlist: list[str] = Field(default_factory=list)
+    max_order_notional_usdt: Decimal = Field(default=Decimal("100"), gt=0)
+    max_position_notional_usdt: Decimal = Field(default=Decimal("100"), gt=0)
+    max_total_exposure_usdt: Decimal = Field(default=Decimal("100"), gt=0)
+    startup_recovery_timeout_seconds: int = Field(default=20, ge=1)
+    private_state_stale_after_seconds: int = Field(default=10, ge=1)
+    rest_resync_interval_seconds: int = Field(default=15, ge=1)
+    cancel_ack_timeout_seconds: int = Field(default=5, ge=1)
+    startup_recovery_policy: Literal["halt", "flatten"] = "halt"
+
+
 class ReplayConfig(ConfigModel):
     source_root: str | None = None
     start_at: datetime | None = None
@@ -308,7 +322,7 @@ class LLMConfig(ConfigModel):
 
 
 class AppSettings(ConfigModel):
-    config_version: int = Field(default=4, ge=1)
+    config_version: int = Field(default=5, ge=1)
     runtime: RuntimeConfig
     exchange: ExchangeConfig
     symbols: SymbolsConfig
@@ -318,6 +332,7 @@ class AppSettings(ConfigModel):
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     paper: PaperConfig = Field(default_factory=PaperConfig)
+    live: LiveConfig = Field(default_factory=LiveConfig)
     replay: ReplayConfig = Field(default_factory=ReplayConfig)
     strategy: StrategyDefaultsConfig = Field(default_factory=StrategyDefaultsConfig)
     risk: RiskDefaultsConfig

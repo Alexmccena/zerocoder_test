@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
 
 from trading_bot.config.schema import AppSettings
-from trading_bot.domain.enums import RiskDecisionType, TradeAction
+from trading_bot.domain.enums import ExecutionVenueKind, RiskDecisionType, TradeAction
 from trading_bot.domain.models import ExecutionPlan, OrderIntent, RiskDecision, RuntimeState, TradeIntent, utc_now
 
 
@@ -95,6 +95,19 @@ class BasicRiskEngine:
         sized_quantity = sizing["sized_quantity"]
         if not isinstance(sized_quantity, Decimal):
             return self._decision(RiskDecisionType.HALT, ["risk_sizing_failed"])
+
+        live_guard_reason, live_payload = self._validate_live_open_guards(
+            intent=intent,
+            state=state,
+            snapshot=snapshot,
+            sized_quantity=sized_quantity,
+        )
+        if live_guard_reason is not None:
+            return self._decision(
+                RiskDecisionType.REJECT,
+                [live_guard_reason],
+                payload=live_payload,
+            )
 
         entry_order = OrderIntent(
             intent_id=intent.intent_id,
@@ -349,6 +362,100 @@ class BasicRiskEngine:
         if intent.entry_type.value == "limit" and intent.limit_price is not None:
             return intent.limit_price
         return intent.reference_price
+
+    def _reference_execution_price(self, *, intent: TradeIntent, snapshot) -> Decimal:
+        if intent.entry_type.value == "limit" and intent.limit_price is not None:
+            return intent.limit_price
+        orderbook = snapshot.orderbook
+        if orderbook is None:
+            return intent.reference_price
+        if intent.side == "buy" and orderbook.asks:
+            return orderbook.asks[0].price
+        if intent.side == "sell" and orderbook.bids:
+            return orderbook.bids[0].price
+        return intent.reference_price
+
+    def _validate_live_open_guards(
+        self,
+        *,
+        intent: TradeIntent,
+        state: RuntimeState,
+        snapshot,
+        sized_quantity: Decimal,
+    ) -> tuple[str | None, dict[str, str]]:
+        if state.execution_venue != ExecutionVenueKind.LIVE:
+            return None, {}
+        if not self.config.live.execution_enabled:
+            return "live_execution_disabled", {}
+        if not self.config.exchange.testnet and not self.config.live.allow_mainnet:
+            return "live_mainnet_not_armed", {}
+        if intent.symbol not in set(self.config.live.symbol_allowlist):
+            return "live_symbol_not_allowed", {"symbol": intent.symbol}
+
+        stale_reason = self._resolve_live_stale_reason(state=state, as_of=intent.generated_at)
+        if stale_reason is not None:
+            return "live_private_state_stale", {"stale_reason": stale_reason}
+
+        reference_price = self._reference_execution_price(intent=intent, snapshot=snapshot)
+        estimated_notional = sized_quantity * reference_price
+        if estimated_notional > self.config.live.max_order_notional_usdt:
+            return (
+                "live_order_notional_limit",
+                {
+                    "estimated_notional": str(estimated_notional),
+                    "max_order_notional_usdt": str(self.config.live.max_order_notional_usdt),
+                },
+            )
+
+        existing_symbol_position = state.open_positions.get(intent.symbol)
+        existing_symbol_exposure = Decimal("0")
+        if existing_symbol_position is not None and existing_symbol_position.quantity > 0:
+            existing_symbol_exposure = existing_symbol_position.quantity * reference_price
+        projected_symbol_exposure = existing_symbol_exposure + estimated_notional
+        if projected_symbol_exposure > self.config.live.max_position_notional_usdt:
+            return (
+                "live_symbol_exposure_limit",
+                {
+                    "projected_symbol_exposure": str(projected_symbol_exposure),
+                    "max_position_notional_usdt": str(self.config.live.max_position_notional_usdt),
+                },
+            )
+
+        total_exposure = Decimal("0")
+        for position in state.open_positions.values():
+            if position.quantity <= 0:
+                continue
+            position_price = position.mark_price or position.last_price or position.entry_price
+            total_exposure += position.quantity * position_price
+        projected_total_exposure = total_exposure + estimated_notional
+        if projected_total_exposure > self.config.live.max_total_exposure_usdt:
+            return (
+                "live_total_exposure_limit",
+                {
+                    "projected_total_exposure": str(projected_total_exposure),
+                    "max_total_exposure_usdt": str(self.config.live.max_total_exposure_usdt),
+                },
+            )
+        return None, {
+            "estimated_notional": str(estimated_notional),
+            "projected_symbol_exposure": str(projected_symbol_exposure),
+            "projected_total_exposure": str(projected_total_exposure),
+        }
+
+    def _resolve_live_stale_reason(self, *, state: RuntimeState, as_of: datetime) -> str | None:
+        connectivity = state.venue_connectivity_state
+        if connectivity.stale_reason is not None:
+            return connectivity.stale_reason
+        candidates = [
+            ts
+            for ts in (connectivity.last_private_event_at, connectivity.last_successful_rest_sync_at)
+            if ts is not None
+        ]
+        if not candidates:
+            return "private_state_never_synced"
+        if (as_of - max(candidates)).total_seconds() > self.config.live.private_state_stale_after_seconds:
+            return "private_state_stale"
+        return None
 
     def _decision(
         self,

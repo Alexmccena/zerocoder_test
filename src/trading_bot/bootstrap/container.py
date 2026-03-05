@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from contextlib import suppress
 import asyncio
+from decimal import Decimal
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -24,6 +25,7 @@ from trading_bot.config.schema import AppSettings
 from trading_bot.domain.enums import ExecutionVenueKind, RunMode, ServiceStatus
 from trading_bot.domain.models import HealthReport
 from trading_bot.execution.engine import ExecutionEngine
+from trading_bot.live.venue import LiveVenue
 from trading_bot.marketdata.capture import CaptureService
 from trading_bot.marketdata.events import MarketEvent, PrivateStateEvent
 from trading_bot.marketdata.feed import BybitPublicMarketFeed
@@ -270,6 +272,8 @@ class RuntimeContainer:
     runtime_runner: RuntimeRunner
     control_plane: RuntimeControlPlane
     telegram_service: TelegramAlertService | None = None
+    live_rest_client: BybitRestClient | None = None
+    live_private_ws_client: BybitPrivateWebSocketClient | None = None
 
     @classmethod
     def build(
@@ -283,10 +287,9 @@ class RuntimeContainer:
         speed: float | None = None,
     ) -> "RuntimeContainer":
         env_settings = bootstrap or BootstrapSettings()
-        overrides: dict[str, Any] = {
-            "runtime": {"mode": mode.value},
-            "exchange": {"private_state_enabled": False},
-        }
+        overrides: dict[str, Any] = {"runtime": {"mode": mode.value}}
+        if mode in {RunMode.PAPER, RunMode.REPLAY, RunMode.BACKTEST}:
+            overrides["exchange"] = {"private_state_enabled": False}
         if mode in {RunMode.REPLAY, RunMode.BACKTEST}:
             replay_overrides: dict[str, Any] = {
                 "source_root": source,
@@ -316,8 +319,10 @@ class RuntimeContainer:
 
         snapshot_builder = MarketSnapshotBuilder(stale_after_seconds=loaded.settings.risk.stale_market_data_seconds)
         feature_provider = FeatureProvider(config=loaded.settings)
+        live_rest_client: BybitRestClient | None = None
+        live_private_ws_client: BybitPrivateWebSocketClient | None = None
 
-        if mode == RunMode.PAPER:
+        if mode in {RunMode.PAPER, RunMode.LIVE}:
             rest_client = BybitRestClient(
                 config=loaded.settings,
                 api_key=env_settings.bybit_api_key,
@@ -344,11 +349,32 @@ class RuntimeContainer:
             market_feed = ReplayFeed(reader=replay_reader, strategy_start_at=strategy_start_at)
             clock = ReplayClock(speed=loaded.settings.replay.speed) if mode == RunMode.REPLAY else BacktestClock()
 
-        runtime_state = RuntimeStateStore(run_mode=mode, execution_venue=ExecutionVenueKind.PAPER)
+        execution_venue_kind = ExecutionVenueKind.LIVE if mode == RunMode.LIVE else ExecutionVenueKind.PAPER
+        runtime_state = RuntimeStateStore(run_mode=mode, execution_venue=execution_venue_kind)
         control_plane = RuntimeControlPlane(config=loaded.settings, state_store=runtime_state)
         strategy = build_strategy(config=loaded.settings, runtime_state_provider=lambda: runtime_state.state)
         risk_engine = BasicRiskEngine(config=loaded.settings)
-        execution_engine = ExecutionEngine(config=loaded.settings, venue=PaperVenue(config=loaded.settings, metrics=metrics))
+        if mode == RunMode.LIVE:
+            live_rest_client = BybitRestClient(
+                config=loaded.settings,
+                api_key=env_settings.bybit_api_key,
+                api_secret=env_settings.bybit_api_secret,
+                metrics=metrics,
+            )
+            live_private_ws_client = BybitPrivateWebSocketClient(
+                config=loaded.settings,
+                rest_client=live_rest_client,
+                metrics=metrics,
+            )
+            venue = LiveVenue(
+                config=loaded.settings,
+                metrics=metrics,
+                rest_client=live_rest_client,
+                private_ws_client=live_private_ws_client,
+            )
+        else:
+            venue = PaperVenue(config=loaded.settings, metrics=metrics)
+        execution_engine = ExecutionEngine(config=loaded.settings, venue=venue)
         runtime_runner = RuntimeRunner(
             config=loaded.settings,
             config_hash=loaded.fingerprint,
@@ -377,7 +403,7 @@ class RuntimeContainer:
             control_plane=control_plane,
         )
         telegram_service = None
-        if mode == RunMode.PAPER and loaded.settings.alerts.telegram.enabled and env_settings.telegram_bot_token is not None:
+        if mode in {RunMode.PAPER, RunMode.LIVE} and loaded.settings.alerts.telegram.enabled and env_settings.telegram_bot_token is not None:
             telegram_service = TelegramAlertService(
                 config=loaded.settings,
                 token=env_settings.telegram_bot_token,
@@ -398,6 +424,8 @@ class RuntimeContainer:
             runtime_runner=runtime_runner,
             control_plane=control_plane,
             telegram_service=telegram_service,
+            live_rest_client=live_rest_client,
+            live_private_ws_client=live_private_ws_client,
         )
 
     async def run_runtime(self, *, duration_seconds: int | None = None, summary_out: Path | None = None) -> dict[str, object]:
@@ -412,10 +440,90 @@ class RuntimeContainer:
             with suppress(asyncio.CancelledError):
                 await poll_task
 
+    async def live_preflight(self) -> dict[str, object]:
+        if self.config.runtime.mode != RunMode.LIVE:
+            raise RuntimeError("live-preflight requires runtime.mode=live")
+        if self.live_rest_client is None or self.live_private_ws_client is None:
+            raise RuntimeError("live-preflight dependencies are not initialized")
+        if not self.config.exchange.private_state_enabled:
+            raise RuntimeError("exchange.private_state_enabled must be true for live-preflight")
+
+        instruments, account, open_orders, open_positions = await asyncio.gather(
+            self.live_rest_client.fetch_instruments(self.config.live.symbol_allowlist),
+            self.live_rest_client.fetch_account_state(),
+            self.live_rest_client.fetch_open_orders(),
+            self.live_rest_client.fetch_positions(),
+        )
+        ws_auth_ok = await self.live_private_ws_client.probe_auth(timeout_seconds=5.0)
+        if not ws_auth_ok:
+            raise RuntimeError("Bybit private websocket auth probe failed")
+
+        instrument_by_symbol = {instrument.symbol: instrument for instrument in instruments}
+        missing_symbols = [symbol for symbol in self.config.live.symbol_allowlist if symbol not in instrument_by_symbol]
+        if missing_symbols:
+            raise RuntimeError(f"live.symbol_allowlist symbols not available: {','.join(missing_symbols)}")
+
+        notional_violations: list[str] = []
+        for symbol in self.config.live.symbol_allowlist:
+            instrument = instrument_by_symbol[symbol]
+            if instrument.min_notional is not None and self.config.live.max_order_notional_usdt < instrument.min_notional:
+                notional_violations.append(symbol)
+        if notional_violations:
+            raise RuntimeError(
+                "live.max_order_notional_usdt below instrument min_notional for: "
+                + ",".join(notional_violations)
+            )
+
+        total_exposure = Decimal("0")
+        open_position_rows: list[dict[str, str]] = []
+        for position in open_positions:
+            if position.status != "open" or position.quantity <= 0:
+                continue
+            reference_price = position.mark_price or position.last_price or position.entry_price
+            exposure = position.quantity * reference_price
+            total_exposure += exposure
+            open_position_rows.append(
+                {
+                    "symbol": position.symbol,
+                    "side": position.side,
+                    "quantity": str(position.quantity),
+                    "notional_usdt": str(exposure),
+                }
+            )
+
+        return {
+            "mode": "live",
+            "network": "testnet" if self.config.exchange.testnet else "mainnet",
+            "execution_enabled": self.config.live.execution_enabled,
+            "allow_mainnet": self.config.live.allow_mainnet,
+            "symbol_allowlist": list(self.config.live.symbol_allowlist),
+            "caps": {
+                "max_order_notional_usdt": str(self.config.live.max_order_notional_usdt),
+                "max_position_notional_usdt": str(self.config.live.max_position_notional_usdt),
+                "max_total_exposure_usdt": str(self.config.live.max_total_exposure_usdt),
+                "private_state_stale_after_seconds": self.config.live.private_state_stale_after_seconds,
+            },
+            "account": {
+                "equity": str(account.equity),
+                "available_balance": str(account.available_balance),
+            },
+            "open_orders": len(open_orders),
+            "open_positions": open_position_rows,
+            "total_exposure_usdt": str(total_exposure),
+            "ws_auth_ok": ws_auth_ok,
+        }
+
     async def shutdown(self) -> None:
         try:
             if self.telegram_service is not None:
                 await self.telegram_service.close()
+            with suppress(Exception):
+                await self.runtime_runner.execution_engine.close()
+            with suppress(Exception):
+                await self.runtime_runner.market_feed.close()
+            if self.live_rest_client is not None:
+                with suppress(Exception):
+                    await self.live_rest_client.close()
             await self.redis_client.aclose()
         finally:
             await self.db_engine.dispose()

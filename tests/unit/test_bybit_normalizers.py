@@ -79,7 +79,7 @@ def test_normalize_public_messages() -> None:
     assert isinstance(orderbook_events[0], OrderBookEvent)
     assert orderbook_events[0].symbol == "BTCUSDT"
     assert isinstance(trades[0], TradeEvent)
-    assert trades[0].side == "Buy"
+    assert trades[0].side == "buy"
     assert isinstance(klines[0], KlineEvent)
     assert klines[0].symbol == "BTCUSDT"
     assert klines[0].interval == "1m"
@@ -143,3 +143,5 @@ def test_normalize_private_messages() -> None:
     assert wallet_events[0].account_type == "UNIFIED"
     assert isinstance(order_events[0], OrderUpdateEvent)
     assert order_events[0].order.exchange_order_id == "oid-1"
+    assert order_events[0].order.side == "buy"
+    assert order_events[0].order.status == "working"

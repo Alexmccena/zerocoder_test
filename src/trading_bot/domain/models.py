@@ -375,10 +375,18 @@ class BracketState(DomainModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class VenueConnectivityState(DomainModel):
+    private_ws_connected: bool = False
+    last_private_event_at: datetime | None = None
+    last_successful_rest_sync_at: datetime | None = None
+    stale_reason: str | None = None
+
+
 class VenueStateSnapshot(DomainModel):
     account_state: AccountState | None = None
     open_orders: list[OrderState] = Field(default_factory=list)
     open_positions: list[PositionState] = Field(default_factory=list)
+    connectivity_state: VenueConnectivityState = Field(default_factory=VenueConnectivityState)
     as_of: datetime = Field(default_factory=utc_now)
 
 
@@ -411,6 +419,7 @@ class RuntimeState(DomainModel):
     run_mode: RunMode
     execution_venue: ExecutionVenueKind
     account_state: AccountState | None = None
+    venue_connectivity_state: VenueConnectivityState = Field(default_factory=VenueConnectivityState)
     open_orders: dict[str, OrderState] = Field(default_factory=dict)
     open_positions: dict[str, PositionState] = Field(default_factory=dict)
     market_state_by_symbol: dict[str, MarketSnapshot] = Field(default_factory=dict)

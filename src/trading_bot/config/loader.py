@@ -157,7 +157,7 @@ def _normalize_strategy_document(raw: dict[str, Any] | None) -> dict[str, Any]:
 def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
     normalized = deep_merge(
         {
-            "config_version": 4,
+            "config_version": 5,
             "execution": {
                 "default_entry_type": "market",
                 "limit_ttl_ms": 3000,
@@ -174,6 +174,19 @@ def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
                 "fill_latency_ms": 150,
                 "limit_fill_visible_ratio": 0.25,
                 "allow_partial_limit_fills": True,
+            },
+            "live": {
+                "execution_enabled": False,
+                "allow_mainnet": False,
+                "symbol_allowlist": [],
+                "max_order_notional_usdt": "100",
+                "max_position_notional_usdt": "100",
+                "max_total_exposure_usdt": "100",
+                "startup_recovery_timeout_seconds": 20,
+                "private_state_stale_after_seconds": 10,
+                "rest_resync_interval_seconds": 15,
+                "cancel_ack_timeout_seconds": 5,
+                "startup_recovery_policy": "halt",
             },
             "replay": {
                 "source_root": None,
@@ -213,7 +226,7 @@ def normalize_config_document(raw: dict[str, Any]) -> dict[str, Any]:
         },
         raw,
     )
-    normalized["config_version"] = max(int(normalized.get("config_version", 1)), 4)
+    normalized["config_version"] = max(int(normalized.get("config_version", 1)), 5)
     normalized["strategy"] = _normalize_strategy_document(normalized.get("strategy"))
     replay = normalized.setdefault("replay", {})
     if replay.get("source_root") is None:
@@ -254,6 +267,24 @@ def validate_runtime_secrets(settings: AppSettings, env_settings: BootstrapSetti
             raise ConfigLoadError("alerts.telegram.chat_ids is required when alerts.telegram.enabled=true")
 
 
+def validate_live_config(settings: AppSettings) -> None:
+    if settings.runtime.mode != RunMode.LIVE:
+        return
+    if not settings.exchange.private_state_enabled:
+        raise ConfigLoadError("exchange.private_state_enabled must be true when runtime.mode is live")
+    if not settings.live.symbol_allowlist:
+        raise ConfigLoadError("live.symbol_allowlist is required when runtime.mode is live")
+    symbol_allowlist = set(settings.symbols.allowlist)
+    unknown_symbols = [symbol for symbol in settings.live.symbol_allowlist if symbol not in symbol_allowlist]
+    if unknown_symbols:
+        raise ConfigLoadError(
+            "live.symbol_allowlist must be a subset of symbols.allowlist; "
+            f"unknown symbols: {','.join(unknown_symbols)}"
+        )
+    if not settings.exchange.testnet and not settings.live.allow_mainnet:
+        raise ConfigLoadError("live.allow_mainnet must be true when runtime.mode is live and exchange.testnet is false")
+
+
 def compute_config_hash(payload: AppSettings | dict[str, Any]) -> str:
     normalized = payload.model_dump(mode="json") if isinstance(payload, AppSettings) else payload
     encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -283,5 +314,6 @@ def load_app_config(
         raise ConfigLoadError(f"Invalid application configuration: {exc}") from exc
     if app_settings.runtime.mode in {RunMode.REPLAY, RunMode.BACKTEST} and not app_settings.replay.source_root:
         raise ConfigLoadError("replay.source_root is required when runtime.mode is replay or backtest")
+    validate_live_config(app_settings)
     validate_runtime_secrets(app_settings, env_settings)
     return LoadedConfig(settings=app_settings, fingerprint=compute_config_hash(app_settings))

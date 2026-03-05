@@ -181,6 +181,56 @@ class AppMetrics:
             ["command", "outcome"],
             registry=self.registry,
         )
+        self.live_orders_submitted_total = Counter(
+            "tb_live_orders_submitted_total",
+            "Number of live order submit attempts by status.",
+            ["status"],
+            registry=self.registry,
+        )
+        self.live_order_submit_seconds = Histogram(
+            "tb_live_order_submit_seconds",
+            "Latency of live order submit requests.",
+            registry=self.registry,
+        )
+        self.live_order_cancels_total = Counter(
+            "tb_live_order_cancels_total",
+            "Number of live order cancel attempts by status.",
+            ["status"],
+            registry=self.registry,
+        )
+        self.live_private_ws_gap_total = Counter(
+            "tb_live_private_ws_gap_total",
+            "Number of live private websocket gap/reconnect incidents.",
+            registry=self.registry,
+        )
+        self.live_private_ws_last_event_age_seconds = Gauge(
+            "tb_live_private_ws_last_event_age_seconds",
+            "Age of the latest private websocket event in seconds.",
+            registry=self.registry,
+        )
+        self.live_rest_resync_total = Counter(
+            "tb_live_rest_resync_total",
+            "Number of live REST resync attempts by status.",
+            ["status"],
+            registry=self.registry,
+        )
+        self.live_recovery_total = Counter(
+            "tb_live_recovery_total",
+            "Number of startup live recovery outcomes.",
+            ["outcome"],
+            registry=self.registry,
+        )
+        self.live_rollout_guard_total = Counter(
+            "tb_live_rollout_guard_total",
+            "Number of rollout guard rejections in live mode.",
+            ["reason"],
+            registry=self.registry,
+        )
+        self.live_total_exposure_usdt = Gauge(
+            "tb_live_total_exposure_usdt",
+            "Estimated live total open exposure in USDT.",
+            registry=self.registry,
+        )
 
     def record_app_start(self) -> None:
         self.app_start_total.inc()
@@ -270,6 +320,32 @@ class AppMetrics:
 
     def record_telegram_command(self, *, command: str, outcome: str) -> None:
         self.telegram_commands_total.labels(command=command, outcome=outcome).inc()
+
+    def record_live_order_submit(self, *, status: str, seconds: float | None = None) -> None:
+        self.live_orders_submitted_total.labels(status=status).inc()
+        if seconds is not None:
+            self.live_order_submit_seconds.observe(max(seconds, 0.0))
+
+    def record_live_order_cancel(self, *, status: str) -> None:
+        self.live_order_cancels_total.labels(status=status).inc()
+
+    def record_live_private_ws_gap(self) -> None:
+        self.live_private_ws_gap_total.inc()
+
+    def set_live_private_ws_last_event_age(self, value: float) -> None:
+        self.live_private_ws_last_event_age_seconds.set(max(value, 0.0))
+
+    def record_live_rest_resync(self, *, status: str) -> None:
+        self.live_rest_resync_total.labels(status=status).inc()
+
+    def record_live_recovery(self, *, outcome: str) -> None:
+        self.live_recovery_total.labels(outcome=outcome).inc()
+
+    def record_live_rollout_guard(self, *, reason: str) -> None:
+        self.live_rollout_guard_total.labels(reason=reason).inc()
+
+    def set_live_total_exposure_usdt(self, value: float) -> None:
+        self.live_total_exposure_usdt.set(max(value, 0.0))
 
     def render(self) -> bytes:
         return generate_latest(self.registry)

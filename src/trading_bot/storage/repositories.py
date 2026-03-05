@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -77,6 +77,16 @@ class RunSessionRepository:
             record.status = "failed" if reason is None else f"failed:{reason}"
             record.ended_at = utc_now()
             await session.commit()
+
+    async def get_latest_live_session(self) -> RunSessionRecord | None:
+        statement = (
+            select(RunSessionRecord)
+            .where(RunSessionRecord.run_mode == "live")
+            .order_by(desc(RunSessionRecord.started_at))
+            .limit(1)
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
 
 
 @dataclass(slots=True)
@@ -295,7 +305,13 @@ class OrderRepository:
             record.updated_at = order.updated_at
             await session.commit()
 
-    async def list_open_orders(self, *, run_session_id: str | None = None, symbol: str | None = None) -> list[OrderRecord]:
+    async def list_open_orders(
+        self,
+        *,
+        run_session_id: str | None = None,
+        symbol: str | None = None,
+        execution_venue: str | None = None,
+    ) -> list[OrderRecord]:
         statement = select(OrderRecord).where(
             OrderRecord.status.in_(("new", "working", "partially_filled")),
         )
@@ -303,9 +319,27 @@ class OrderRepository:
             statement = statement.where(OrderRecord.run_session_id == run_session_id)
         if symbol is not None:
             statement = statement.where(OrderRecord.symbol == symbol)
+        if execution_venue is not None:
+            statement = statement.where(OrderRecord.execution_venue == execution_venue)
         async with self.session_factory() as session:
             result = await session.scalars(statement)
             return list(result)
+
+    async def get_by_exchange_order_id(self, *, exchange_name: str, exchange_order_id: str) -> OrderRecord | None:
+        statement = select(OrderRecord).where(
+            OrderRecord.exchange_name == exchange_name,
+            OrderRecord.exchange_order_id == exchange_order_id,
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
+
+    async def get_by_client_order_id(self, *, exchange_name: str, client_order_id: str) -> OrderRecord | None:
+        statement = select(OrderRecord).where(
+            OrderRecord.exchange_name == exchange_name,
+            OrderRecord.client_order_id == client_order_id,
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
 
 
 @dataclass(slots=True)
@@ -412,6 +446,24 @@ class PositionRepository:
         )
         async with self.session_factory() as session:
             return await session.scalar(statement)
+
+    async def list_open_positions(
+        self,
+        *,
+        run_session_id: str | None = None,
+        symbol: str | None = None,
+        execution_venue: str | None = None,
+    ) -> list[PositionRecord]:
+        statement = select(PositionRecord).where(PositionRecord.status == "open")
+        if run_session_id is not None:
+            statement = statement.where(PositionRecord.run_session_id == run_session_id)
+        if symbol is not None:
+            statement = statement.where(PositionRecord.symbol == symbol)
+        if execution_venue is not None:
+            statement = statement.where(PositionRecord.execution_venue == execution_venue)
+        async with self.session_factory() as session:
+            result = await session.scalars(statement)
+            return list(result)
 
     async def close_position(self, *, run_session_id: str, position: PositionState) -> None:
         async with self.session_factory() as session:

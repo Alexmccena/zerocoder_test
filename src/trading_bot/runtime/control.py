@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from trading_bot.config.schema import AppSettings
-from trading_bot.domain.enums import TradeAction
+from trading_bot.domain.enums import ExecutionVenueKind, TradeAction
 from trading_bot.domain.models import BracketState, PositionState, TradeIntent
 from trading_bot.runtime.state import RuntimeStateStore
 
@@ -29,14 +29,23 @@ class FlattenRequest:
 class RuntimeStatusSnapshot:
     service_name: str
     run_mode: str
+    execution_venue: str
     environment: str
     run_session_id: str
+    venue_network: str
+    live_execution_enabled: bool | None
+    live_allow_mainnet: bool | None
+    live_symbol_allowlist: tuple[str, ...]
     paused: bool
     flatten_pending: bool
     started_at: datetime | None
     last_market_event_at: datetime | None
     account_equity: Decimal | None
     available_balance: Decimal | None
+    live_total_exposure_usdt: Decimal | None
+    private_ws_connected: bool | None
+    last_private_event_at: datetime | None
+    last_successful_rest_sync_at: datetime | None
     open_positions: tuple[PositionState, ...]
     open_orders_count: int
     active_brackets: tuple[BracketState, ...]
@@ -71,6 +80,13 @@ class RuntimeRiskSnapshot:
     protection_failure_active: bool
     protection_failure_reason: str | None
     last_kill_switch_reason: str | None
+    live_execution_enabled: bool | None
+    live_allow_mainnet: bool | None
+    live_max_order_notional_usdt: Decimal | None
+    live_max_position_notional_usdt: Decimal | None
+    live_max_total_exposure_usdt: Decimal | None
+    live_private_state_stale_after_seconds: int | None
+    live_active_stale_reason: str | None
 
 
 class RuntimeControlPlane:
@@ -213,21 +229,38 @@ class RuntimeControlPlane:
         state = self._state_store.state
         account = state.account_state
         kill_switch = state.kill_switch_state
+        connectivity = state.venue_connectivity_state
         positions = tuple(sorted(state.open_positions.values(), key=lambda item: item.symbol))
+        total_exposure = Decimal("0")
+        for position in positions:
+            if position.quantity <= 0:
+                continue
+            reference_price = position.mark_price or position.last_price or position.entry_price
+            total_exposure += position.quantity * reference_price
         brackets = tuple(
             sorted(state.active_brackets_by_symbol.values(), key=lambda item: item.symbol)
         )
+        is_live = state.execution_venue == ExecutionVenueKind.LIVE
         return RuntimeStatusSnapshot(
             service_name=self._config.runtime.service_name,
             run_mode=self._config.runtime.mode.value,
+            execution_venue=state.execution_venue.value,
             environment=self._config.runtime.environment.value,
             run_session_id=state.run_session_id,
+            venue_network="testnet" if self._config.exchange.testnet else "mainnet",
+            live_execution_enabled=self._config.live.execution_enabled if is_live else None,
+            live_allow_mainnet=self._config.live.allow_mainnet if is_live else None,
+            live_symbol_allowlist=tuple(self._config.live.symbol_allowlist) if is_live else tuple(),
             paused=self._paused,
             flatten_pending=self._pending_flatten is not None,
             started_at=self._started_at,
             last_market_event_at=self._last_market_event_at,
             account_equity=account.equity if account is not None else None,
             available_balance=account.available_balance if account is not None else None,
+            live_total_exposure_usdt=total_exposure if is_live else None,
+            private_ws_connected=connectivity.private_ws_connected if is_live else None,
+            last_private_event_at=connectivity.last_private_event_at if is_live else None,
+            last_successful_rest_sync_at=connectivity.last_successful_rest_sync_at if is_live else None,
             open_positions=positions,
             open_orders_count=len(state.open_orders),
             active_brackets=brackets,
@@ -243,6 +276,7 @@ class RuntimeControlPlane:
     def build_risk_snapshot(self) -> RuntimeRiskSnapshot:
         state = self._state_store.state
         account = state.account_state
+        is_live = state.execution_venue == ExecutionVenueKind.LIVE
         day_key = self._current_day_key(account.updated_at if account is not None else None)
         day_start_equity = state.day_start_equity_by_utc_date.get(day_key)
         drawdown_ratio: Decimal | None = None
@@ -274,6 +308,15 @@ class RuntimeControlPlane:
             protection_failure_active=kill_switch.protection_failure_active,
             protection_failure_reason=kill_switch.protection_failure_reason,
             last_kill_switch_reason=kill_switch.last_reason,
+            live_execution_enabled=self._config.live.execution_enabled if is_live else None,
+            live_allow_mainnet=self._config.live.allow_mainnet if is_live else None,
+            live_max_order_notional_usdt=self._config.live.max_order_notional_usdt if is_live else None,
+            live_max_position_notional_usdt=self._config.live.max_position_notional_usdt if is_live else None,
+            live_max_total_exposure_usdt=self._config.live.max_total_exposure_usdt if is_live else None,
+            live_private_state_stale_after_seconds=(
+                self._config.live.private_state_stale_after_seconds if is_live else None
+            ),
+            live_active_stale_reason=state.venue_connectivity_state.stale_reason if is_live else None,
         )
 
     def _current_day_key(self, reference: datetime | None) -> str:

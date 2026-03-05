@@ -10,9 +10,10 @@ from structlog.stdlib import BoundLogger
 
 from trading_bot.alerts.protocols import OperationalAlertSink
 from trading_bot.config.schema import AppSettings
-from trading_bot.domain.enums import ExecutionVenueKind, RiskDecisionType, RunMode
+from trading_bot.domain.enums import RiskDecisionType, RunMode
 from trading_bot.domain.models import ExecutionResult, MarketSnapshot, PnlSnapshot, RiskDecision
 from trading_bot.execution.engine import ExecutionEngine
+from trading_bot.live.recovery import recover_live_runtime_state
 from trading_bot.marketdata.events import KlineEvent, MarketEvent
 from trading_bot.marketdata.snapshots import FeatureProvider, MarketSnapshotBuilder
 from trading_bot.observability.metrics import AppMetrics
@@ -108,12 +109,13 @@ class RuntimeRunner:
             run_mode=self.config.runtime.mode.value,
             environment=self.config.runtime.environment.value,
             status="running",
-            execution_venue=ExecutionVenueKind.PAPER.value,
+            execution_venue=self.state_store.state.execution_venue.value,
         )
         state = self.state_store
         state.attach_run_session(run_session.id)
         if self.control_plane is not None:
-            self.control_plane.bind_run(started_at=run_session.created_at)
+            started_at = getattr(run_session, "started_at", None) or getattr(run_session, "created_at")
+            self.control_plane.bind_run(started_at=started_at)
 
         total_signals = 0
         total_orders = 0
@@ -122,6 +124,7 @@ class RuntimeRunner:
         started_at = time.perf_counter()
 
         try:
+            await self.execution_engine.connect()
             await self.config_snapshots.create(
                 run_session_id=run_session.id,
                 config_hash=self.config_hash,
@@ -131,10 +134,38 @@ class RuntimeRunner:
             self.snapshot_builder.register_instruments(instruments)
             await self.instruments.upsert_many(instruments)
 
-            initial_account = self.execution_engine.account_state()
+            venue_snapshot = await self.execution_engine.snapshot_state()
+            initial_account = venue_snapshot.account_state or self.execution_engine.account_state()
             state.set_account(initial_account)
+            state.set_connectivity(venue_snapshot.connectivity_state)
             self._ensure_day_start_equity(state=state, as_of=initial_account.updated_at)
-            await self.account_snapshots.create_paper_snapshot(run_session_id=run_session.id, account=initial_account)
+            await self._store_account_snapshot(run_session_id=run_session.id, account=initial_account)
+            if self.config.runtime.mode == RunMode.LIVE:
+                recovery = await recover_live_runtime_state(
+                    execution_engine=self.execution_engine,
+                    state_store=state,
+                    order_repository=self.orders,
+                    as_of=initial_account.updated_at,
+                    startup_recovery_policy=self.config.live.startup_recovery_policy,
+                )
+                recovered_pnl = await self._persist_execution_result(
+                    run_session_id=run_session.id,
+                    state=state,
+                    result=recovery.execution_result,
+                )
+                self.metrics.record_live_recovery(outcome="success" if recovery.success else "halt")
+                if recovered_pnl is not None:
+                    latest_pnl = recovered_pnl
+                if not recovery.success:
+                    await self._emit_alert(
+                        kind="startup_recovery_halt",
+                        severity="critical",
+                        text=(
+                            "Live startup recovery halted runtime. "
+                            f"run_session_id={run_session.id} reason={recovery.halt_reason}"
+                        ),
+                    )
+                    raise RuntimeError(recovery.halt_reason or "startup_recovery_halt")
             state.sync_brackets(self.execution_engine.active_brackets())
             await self._publish_runtime_state(run_session.id, state)
             await self._emit_alert(
@@ -214,6 +245,7 @@ class RuntimeRunner:
             )
             return summary
         finally:
+            await self.execution_engine.close()
             await self.market_feed.close()
 
     async def _process_market_event(
@@ -228,12 +260,18 @@ class RuntimeRunner:
         snapshot = self.snapshot_builder.build(event.symbol, as_of=event.event_ts)
         self.feature_provider.observe(event, snapshot)
         state.update_snapshot(snapshot)
+        drained_before = await self.execution_engine.drain_pending_updates(as_of=event.event_ts)
+        drained_before_pnl = await self._persist_execution_result(
+            run_session_id=run_session_id,
+            state=state,
+            result=drained_before,
+        )
         if self.control_plane is not None:
             self.control_plane.note_market_event(as_of=event.event_ts)
 
         signals = 0
-        orders_count = 0
-        fills_count = 0
+        orders_count = len(drained_before.orders)
+        fills_count = len(drained_before.fills)
         market_event_result = await self.execution_engine.on_market_event(symbol=event.symbol, snapshot=snapshot, as_of=event.event_ts)
         orders_count += len(market_event_result.orders)
         fills_count += len(market_event_result.fills)
@@ -242,6 +280,8 @@ class RuntimeRunner:
             state=state,
             result=market_event_result,
         )
+        if drained_before_pnl is not None and latest_pnl is None:
+            latest_pnl = drained_before_pnl
         if self._should_reconcile(event.event_ts):
             reconciliation_result = await self._reconciler.reconcile(state=state, as_of=event.event_ts)
             orders_count += len(reconciliation_result.orders)
@@ -292,6 +332,10 @@ class RuntimeRunner:
             else:
                 decision = await self.risk_engine.assess(intent, state.state, snapshot)
             self.metrics.record_risk_decision(decision.decision.value)
+            if self.config.runtime.mode == RunMode.LIVE:
+                for reason in decision.reasons:
+                    if reason.startswith("live_"):
+                        self.metrics.record_live_rollout_guard(reason=reason)
             await self.risk_decisions.create(
                 run_session_id=run_session_id,
                 symbol=intent.symbol,
@@ -319,6 +363,16 @@ class RuntimeRunner:
                 run_session_id=run_session_id,
                 state=state,
                 result=submitted,
+            )
+            if persisted_pnl is not None:
+                latest_pnl = persisted_pnl
+            drained_after_submit = await self.execution_engine.drain_pending_updates(as_of=event.event_ts)
+            orders_count += len(drained_after_submit.orders)
+            fills_count += len(drained_after_submit.fills)
+            persisted_pnl = await self._persist_execution_result(
+                run_session_id=run_session_id,
+                state=state,
+                result=drained_after_submit,
             )
             if persisted_pnl is not None:
                 latest_pnl = persisted_pnl
@@ -378,7 +432,7 @@ class RuntimeRunner:
         if result.account_state is not None:
             state.set_account(result.account_state)
             self._ensure_day_start_equity(state=state, as_of=result.account_state.updated_at)
-            await self.account_snapshots.create_paper_snapshot(run_session_id=run_session_id, account=result.account_state)
+            await self._store_account_snapshot(run_session_id=run_session_id, account=result.account_state)
         if result.pnl_snapshot is not None:
             result.pnl_snapshot.run_session_id = run_session_id
             await self.pnl_snapshots.append(result.pnl_snapshot)
@@ -466,6 +520,8 @@ class RuntimeRunner:
         if self._redis_degraded:
             return
         try:
+            venue_snapshot = await self.execution_engine.snapshot_state()
+            state.set_connectivity(venue_snapshot.connectivity_state)
             status_payload: dict[str, object] = {
                 "run_mode": self.config.runtime.mode.value,
                 "config_hash": self.config_hash,
@@ -488,6 +544,27 @@ class RuntimeRunner:
                         "last_command_status": control_status.last_command_status,
                         "last_kill_switch_reason": control_status.last_kill_switch_reason,
                         "protection_failure_active": control_status.protection_failure_active,
+                        "execution_venue": control_status.execution_venue,
+                        "network": control_status.venue_network,
+                        "execution_enabled": control_status.live_execution_enabled,
+                        "allow_mainnet": control_status.live_allow_mainnet,
+                        "live_symbol_allowlist": list(control_status.live_symbol_allowlist),
+                        "private_ws_connected": control_status.private_ws_connected,
+                        "last_private_event_at": (
+                            control_status.last_private_event_at.isoformat()
+                            if control_status.last_private_event_at
+                            else None
+                        ),
+                        "last_successful_rest_sync_at": (
+                            control_status.last_successful_rest_sync_at.isoformat()
+                            if control_status.last_successful_rest_sync_at
+                            else None
+                        ),
+                        "live_total_exposure_usdt": (
+                            str(control_status.live_total_exposure_usdt)
+                            if control_status.live_total_exposure_usdt is not None
+                            else None
+                        ),
                     }
                 )
             await publish_runtime_status(
@@ -565,6 +642,13 @@ class RuntimeRunner:
             loss_state.consecutive_losses = 0
             loss_state.cooldown_until = None
             kill_switch.consecutive_loss_cooldown_until = None
+
+    async def _store_account_snapshot(self, *, run_session_id: str, account) -> None:
+        create = getattr(self.account_snapshots, "create", None)
+        if callable(create):
+            await create(run_session_id=run_session_id, account=account)
+            return
+        await self.account_snapshots.create_paper_snapshot(run_session_id=run_session_id, account=account)
 
     async def _emit_alert(self, *, kind: str, severity: str, text: str) -> None:
         if self.alert_sink is None:

@@ -32,6 +32,12 @@ class ExecutionEngine:
         self.venue = venue
         self.bracket_manager = BracketManager(config=config, venue=venue)
 
+    async def connect(self) -> None:
+        await self.venue.connect()
+
+    async def close(self) -> None:
+        await self.venue.close()
+
     async def submit(self, plan: ExecutionPlan) -> ExecutionResult:
         aggregate = ExecutionResult(accepted=True)
         if plan.metadata.get("cancel_active_bracket"):
@@ -45,6 +51,11 @@ class ExecutionEngine:
 
     async def on_market_event(self, *, symbol: str, snapshot: MarketSnapshot, as_of: datetime) -> ExecutionResult:
         result = await self.venue.process_market_event(symbol, snapshot, as_of)
+        bracket_follow_up = await self.bracket_manager.on_execution_result(result, as_of=as_of)
+        return _merge_results(result, bracket_follow_up)
+
+    async def drain_pending_updates(self, *, as_of: datetime) -> ExecutionResult:
+        result = await self.venue.drain_pending_updates(as_of=as_of)
         bracket_follow_up = await self.bracket_manager.on_execution_result(result, as_of=as_of)
         return _merge_results(result, bracket_follow_up)
 
@@ -62,6 +73,9 @@ class ExecutionEngine:
 
     def active_brackets(self) -> dict[str, BracketState]:
         return self.bracket_manager.active_brackets()
+
+    def seed_bracket(self, bracket: BracketState) -> None:
+        self.bracket_manager.seed_bracket(bracket)
 
     async def sync_positions(self) -> list[PositionState]:
         return await self.venue.sync_positions()

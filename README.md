@@ -44,6 +44,8 @@ uv run bot db upgrade
 uv run bot serve
 uv run bot capture --duration-seconds 30 --public-only
 uv run bot run --mode paper --duration-seconds 30
+uv run bot live-preflight
+uv run bot run --mode live --duration-seconds 30
 uv run bot soak-paper --duration-seconds 600
 uv run bot replay --source data/market_archive --speed 10
 uv run bot backtest --source data/market_archive
@@ -51,7 +53,7 @@ uv run bot backtest --source data/market_archive
 
 ## Telegram operations
 
-`bot run --mode paper` now starts Telegram operational polling automatically when `alerts.telegram.enabled=true`.
+`bot run --mode paper` and `bot run --mode live` start Telegram operational polling automatically when `alerts.telegram.enabled=true`.
 
 Supported commands:
 
@@ -113,7 +115,7 @@ The application exposes:
 
 ## Status
 
-This repository now contains the foundation layer, phase-2 market-data capture, and the phase-3 simulated runtime:
+This repository now contains the foundation layer, phase-2 capture, phase-3 paper/replay runtime, and phase-6 live venue wiring:
 
 - Bybit V5 REST/WS clients for public data and read-only private state
 - normalized market/private events
@@ -121,7 +123,11 @@ This repository now contains the foundation layer, phase-2 market-data capture, 
 - PostgreSQL persistence for instruments and account/private state
 - Parquet market archive writer
 - phase-3 paper venue, replay reader, and shared backtest runtime
-
-Live Bybit execution, production strategy logic, and LLM integration are intentionally deferred.
+- phase-6 Bybit live execution venue, startup recovery, rollout guards, and `live-preflight`
 
 Paper soak instructions live in [docs/runbooks/paper_soak.md](docs/runbooks/paper_soak.md).
+Live rollout runbooks:
+
+- [docs/runbooks/live_testnet_smoke.md](docs/runbooks/live_testnet_smoke.md)
+- [docs/runbooks/live_mainnet_micro.md](docs/runbooks/live_mainnet_micro.md)
+- [docs/runbooks/live_restart_recovery.md](docs/runbooks/live_restart_recovery.md)

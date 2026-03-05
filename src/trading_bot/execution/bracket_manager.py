@@ -39,6 +39,9 @@ class BracketManager:
     def active_brackets(self) -> dict[str, BracketState]:
         return {symbol: bracket.model_copy(deep=True) for symbol, bracket in self._brackets.items()}
 
+    def seed_bracket(self, bracket: BracketState) -> None:
+        self._brackets[bracket.symbol] = bracket.model_copy(deep=True)
+
     def register_plan(self, *, plan: ExecutionPlan, result: ExecutionResult) -> None:
         if not plan.protective_orders or not result.orders:
             return

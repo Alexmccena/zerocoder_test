@@ -1,0 +1,21 @@
+runtime:
+  mode: live
+  environment: dev
+  dry_run: true
+
+exchange:
+  testnet: true
+  private_state_enabled: true
+
+symbols:
+  allowlist:
+    - BTCUSDT
+
+live:
+  execution_enabled: false
+  allow_mainnet: false
+  symbol_allowlist:
+    - BTCUSDT
+  max_order_notional_usdt: 100
+  max_position_notional_usdt: 100
+  max_total_exposure_usdt: 100

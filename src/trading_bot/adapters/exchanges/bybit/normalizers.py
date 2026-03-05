@@ -31,6 +31,57 @@ def from_millis(value: Any) -> datetime:
     return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc)
 
 
+def normalize_order_side(value: str | None) -> str:
+    side = (value or "").lower()
+    if side == "buy":
+        return "buy"
+    if side == "sell":
+        return "sell"
+    return side
+
+
+def normalize_position_side(value: str | None, *, quantity: Decimal) -> str:
+    if quantity <= 0:
+        return "closed"
+    side = (value or "").lower()
+    if side == "buy":
+        return "long"
+    if side == "sell":
+        return "short"
+    return side or "closed"
+
+
+def normalize_order_type(payload: dict[str, Any]) -> str:
+    order_type = str(payload.get("orderType", "")).lower()
+    if order_type == "market":
+        if payload.get("triggerPrice") not in (None, ""):
+            return "stop_market"
+        if str(payload.get("stopOrderType", "")).lower() in {"stop", "stoploss"}:
+            return "stop_market"
+        return "market"
+    if order_type == "limit":
+        return "limit"
+    return order_type
+
+
+def normalize_order_status(value: str | None) -> str:
+    status = (value or "").strip()
+    mapping = {
+        "new": "working",
+        "created": "working",
+        "untriggered": "working",
+        "triggered": "working",
+        "partiallyfilled": "partially_filled",
+        "filled": "filled",
+        "cancelled": "cancelled",
+        "deactivated": "cancelled",
+        "partiallyfilledcanceled": "cancelled",
+        "rejected": "rejected",
+    }
+    canonical = mapping.get(status.lower())
+    return canonical if canonical is not None else status.lower()
+
+
 def _level_list(levels: list[list[str]]) -> list[OrderBookLevel]:
     return [OrderBookLevel(price=to_decimal(price), size=to_decimal(size)) for price, size in levels]
 
@@ -77,17 +128,19 @@ def normalize_account_snapshot(payload: dict[str, Any]) -> AccountState:
 
 def normalize_position(payload: dict[str, Any]) -> PositionState:
     updated_time = payload.get("updatedTime", payload.get("createdTime", 0) or 0)
+    quantity = to_decimal(payload.get("size", "0"))
+    side = normalize_position_side(payload.get("side", ""), quantity=quantity)
     return PositionState(
         exchange_name=ExchangeName.BYBIT,
         symbol=payload["symbol"],
-        side=payload.get("side", ""),
-        quantity=to_decimal(payload.get("size", "0")),
+        side=side,
+        quantity=quantity,
         entry_price=to_decimal(payload.get("avgPrice", "0")),
         mark_price=to_decimal(payload.get("markPrice")) if payload.get("markPrice") not in (None, "") else None,
         leverage=to_decimal(payload.get("leverage", "1")),
         realized_pnl=to_decimal(payload.get("cumRealisedPnl", "0")),
         unrealized_pnl=to_decimal(payload.get("unrealisedPnl", "0")),
-        status="open" if to_decimal(payload.get("size", "0")) > 0 else "closed",
+        status="open" if quantity > 0 else "closed",
         raw_payload=payload,
         updated_at=from_millis(updated_time),
     )
@@ -97,17 +150,19 @@ def normalize_order(payload: dict[str, Any]) -> OrderState:
     created_time = payload.get("createdTime", payload.get("updatedTime", 0) or 0)
     updated_time = payload.get("updatedTime", payload.get("createdTime", 0) or 0)
     avg_price = payload.get("avgPrice")
+    status = normalize_order_status(payload.get("orderStatus", payload.get("cancelType", "unknown")))
     return OrderState(
         order_id=str(payload.get("orderId", payload.get("orderLinkId", ""))),
         exchange_name=ExchangeName.BYBIT,
         symbol=payload["symbol"],
-        side=payload.get("side", ""),
-        order_type=payload.get("orderType", ""),
-        status=payload.get("orderStatus", payload.get("cancelType", "unknown")),
+        side=normalize_order_side(payload.get("side", "")),
+        order_type=normalize_order_type(payload),
+        status=status,
         quantity=to_decimal(payload.get("qty", "0")),
         filled_quantity=to_decimal(payload.get("cumExecQty", "0")),
         average_price=to_decimal(avg_price) if avg_price not in (None, "") else None,
         exchange_order_id=payload.get("orderId"),
+        client_order_id=payload.get("orderLinkId"),
         time_in_force=payload.get("timeInForce"),
         raw_payload=payload,
         created_at=from_millis(created_time),
@@ -120,11 +175,11 @@ def normalize_fill(payload: dict[str, Any]) -> FillState:
         order_id=str(payload.get("orderId", "")),
         exchange_name=ExchangeName.BYBIT,
         symbol=payload.get("symbol", ""),
-        side=payload.get("side", ""),
+        side=normalize_order_side(payload.get("side", "")),
         price=to_decimal(payload.get("execPrice", "0")),
         quantity=to_decimal(payload.get("execQty", "0")),
         fee=to_decimal(payload.get("execFee", "0")),
-        liquidity_type=payload.get("execType", "unknown"),
+        liquidity_type=str(payload.get("execType", "unknown")).lower(),
         exchange_fill_id=payload.get("execId"),
         raw_payload=payload,
         filled_at=from_millis(payload.get("execTime", payload.get("createdTime", 0) or 0)),
@@ -157,7 +212,7 @@ def normalize_public_message(message: dict[str, Any]) -> list[object]:
                 symbol=trade["s"],
                 event_ts=from_millis(trade.get("T", message.get("ts", 0))),
                 trade_id=str(trade.get("i", "")),
-                side=trade.get("S", ""),
+                side=normalize_order_side(trade.get("S", "")),
                 price=to_decimal(trade.get("p", "0")),
                 quantity=to_decimal(trade.get("v", "0")),
                 raw_payload=trade,
@@ -209,7 +264,7 @@ def normalize_public_message(message: dict[str, Any]) -> list[object]:
                 exchange_name=ExchangeName.BYBIT,
                 symbol=row["s"],
                 event_ts=from_millis(row.get("T", message.get("ts", 0))),
-                side=row.get("S", ""),
+                side=normalize_order_side(row.get("S", "")),
                 price=to_decimal(row.get("p", "0")),
                 quantity=to_decimal(row.get("v", "0")),
                 raw_payload=row,
@@ -344,11 +399,11 @@ def normalize_private_message(message: dict[str, Any]) -> list[object]:
                 order_id=str(row.get("orderId", "")),
                 exchange_order_id=row.get("orderId"),
                 exchange_fill_id=row.get("execId"),
-                side=row.get("side", ""),
+                side=normalize_order_side(row.get("side", "")),
                 price=to_decimal(row.get("execPrice", "0")),
                 quantity=to_decimal(row.get("execQty", "0")),
                 fee=to_decimal(row.get("execFee", "0")),
-                liquidity_type=row.get("execType", "unknown"),
+                liquidity_type=str(row.get("execType", "unknown")).lower(),
                 filled_at=from_millis(row.get("execTime", 0)),
                 raw_payload=row,
             )

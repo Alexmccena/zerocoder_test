@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from trading_bot.domain.enums import ExecutionVenueKind, RunMode
-from trading_bot.domain.models import AccountState, BracketState, MarketSnapshot, OrderState, PositionState, RuntimeState
+from trading_bot.domain.models import (
+    AccountState,
+    BracketState,
+    MarketSnapshot,
+    OrderState,
+    PositionState,
+    RuntimeState,
+    VenueConnectivityState,
+)
 
 
 class RuntimeStateStore:
@@ -13,6 +21,9 @@ class RuntimeStateStore:
 
     def set_account(self, account: AccountState) -> None:
         self.state.account_state = account
+
+    def set_connectivity(self, connectivity: VenueConnectivityState) -> None:
+        self.state.venue_connectivity_state = connectivity
 
     def update_order(self, order: OrderState) -> None:
         if order.status in {"filled", "rejected", "expired", "cancelled"}:

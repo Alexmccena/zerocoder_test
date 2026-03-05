@@ -1,4 +1,4 @@
-config_version: 4
+config_version: 5
 
 runtime:
   service_name: trading-bot
@@ -158,6 +158,19 @@ paper:
   fill_latency_ms: 150
   limit_fill_visible_ratio: 0.25
   allow_partial_limit_fills: true
+
+live:
+  execution_enabled: false
+  allow_mainnet: false
+  symbol_allowlist: []
+  max_order_notional_usdt: 100
+  max_position_notional_usdt: 100
+  max_total_exposure_usdt: 100
+  startup_recovery_timeout_seconds: 20
+  private_state_stale_after_seconds: 10
+  rest_resync_interval_seconds: 15
+  cancel_ack_timeout_seconds: 5
+  startup_recovery_policy: halt
 
 replay:
   source_root: null

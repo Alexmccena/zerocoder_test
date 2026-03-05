@@ -207,7 +207,7 @@ def test_strategy_flat_placeholder_fields_are_normalized_to_v4_shape(tmp_path: P
 
     loaded = load_app_config(settings, base_file=base)
 
-    assert loaded.settings.config_version == 4
+    assert loaded.settings.config_version == 5
     assert loaded.settings.strategy.placeholder.signal_threshold_bps == 11
 
 
@@ -336,3 +336,69 @@ def test_alert_chat_ids_default_into_allowed_chat_ids(tmp_path: Path) -> None:
     loaded = load_app_config(settings, base_file=base)
 
     assert loaded.settings.alerts.telegram.allowed_chat_ids == [1001, 1002]
+
+
+def test_live_mode_requires_private_state_enabled(tmp_path: Path) -> None:
+    base = tmp_path / "base.yaml"
+    overlay = tmp_path / "live.yaml"
+    base.write_text(
+        "\n".join(
+            [
+                "runtime: {service_name: trading-bot, mode: live, environment: dev}",
+                "exchange: {primary: bybit, market_type: linear_perp, position_mode: one_way, account_alias: base, testnet: true, private_state_enabled: false}",
+                "symbols: {allowlist: [BTCUSDT]}",
+                "live: {symbol_allowlist: [BTCUSDT]}",
+                "storage: {postgres_dsn: placeholder, redis_dsn: placeholder}",
+                "observability: {log_level: INFO, http_host: 127.0.0.1, http_port: 8000}",
+                "strategy: {name: foundation, default_timeframe: 1m}",
+                "risk: {max_open_positions: 2, risk_per_trade: 0.1, max_daily_loss: 0.2}",
+                "llm: {enabled: false, provider: none, model_name: '', timeout_seconds: 10}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    overlay.write_text("{}", encoding="utf-8")
+    settings = BootstrapSettings(
+        env=Environment.DEV,
+        config_file=str(overlay),
+        postgres_dsn="postgresql+asyncpg://user:pass@localhost:5432/app",
+        redis_dsn="redis://localhost:6379/0",
+        _env_file=None,
+    )
+
+    with pytest.raises(ConfigLoadError, match="private_state_enabled"):
+        load_app_config(settings, base_file=base)
+
+
+def test_live_mode_requires_symbol_allowlist_subset(tmp_path: Path) -> None:
+    base = tmp_path / "base.yaml"
+    overlay = tmp_path / "live.yaml"
+    base.write_text(
+        "\n".join(
+            [
+                "runtime: {service_name: trading-bot, mode: live, environment: dev}",
+                "exchange: {primary: bybit, market_type: linear_perp, position_mode: one_way, account_alias: base, testnet: true, private_state_enabled: true}",
+                "symbols: {allowlist: [BTCUSDT]}",
+                "live: {symbol_allowlist: [ETHUSDT]}",
+                "storage: {postgres_dsn: placeholder, redis_dsn: placeholder}",
+                "observability: {log_level: INFO, http_host: 127.0.0.1, http_port: 8000}",
+                "strategy: {name: foundation, default_timeframe: 1m}",
+                "risk: {max_open_positions: 2, risk_per_trade: 0.1, max_daily_loss: 0.2}",
+                "llm: {enabled: false, provider: none, model_name: '', timeout_seconds: 10}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    overlay.write_text("{}", encoding="utf-8")
+    settings = BootstrapSettings(
+        env=Environment.DEV,
+        config_file=str(overlay),
+        postgres_dsn="postgresql+asyncpg://user:pass@localhost:5432/app",
+        redis_dsn="redis://localhost:6379/0",
+        bybit_api_key="key",
+        bybit_api_secret="secret",
+        _env_file=None,
+    )
+
+    with pytest.raises(ConfigLoadError, match="subset"):
+        load_app_config(settings, base_file=base)

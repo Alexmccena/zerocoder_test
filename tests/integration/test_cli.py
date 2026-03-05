@@ -20,6 +20,8 @@ def apply_env(monkeypatch) -> None:
     monkeypatch.setenv("TB_LOG_LEVEL", "INFO")
     monkeypatch.setenv("TB_HTTP_HOST", "0.0.0.0")
     monkeypatch.setenv("TB_HTTP_PORT", "8080")
+    monkeypatch.setenv("TB_BYBIT_API_KEY", "key")
+    monkeypatch.setenv("TB_BYBIT_API_SECRET", "secret")
 
 
 def test_validate_config_command(monkeypatch) -> None:
@@ -159,13 +161,59 @@ def test_soak_paper_command_uses_runtime_container(monkeypatch, tmp_path) -> Non
     assert captured["shutdown"] is True
 
 
-def test_run_live_returns_not_implemented(monkeypatch) -> None:
+def test_run_live_uses_runtime_container(monkeypatch) -> None:
     apply_env(monkeypatch)
+    captured = {}
 
-    result = runner.invoke(app, ["run", "--mode", "live"])
+    class FakeRuntimeContainer:
+        async def run_runtime(self, *, duration_seconds: int | None = None, summary_out=None) -> dict[str, object]:
+            captured["duration_seconds"] = duration_seconds
+            return {"mode": "live"}
 
-    assert result.exit_code == 1
-    assert "phase 6" in result.stderr
+        async def shutdown(self) -> None:
+            captured["shutdown"] = True
+
+    def fake_build_runtime_container(bootstrap, *, mode: RunMode, source=None, start_at=None, end_at=None, speed=None):
+        captured["mode"] = mode
+        return FakeRuntimeContainer()
+
+    monkeypatch.setattr("trading_bot.cli.build_runtime_container", fake_build_runtime_container)
+
+    result = runner.invoke(app, ["run", "--mode", "live", "--duration-seconds", "5"])
+
+    assert result.exit_code == 0
+    assert captured["mode"] == RunMode.LIVE
+    assert captured["duration_seconds"] == 5
+    assert captured["shutdown"] is True
+
+
+def test_live_preflight_command_uses_runtime_container(monkeypatch) -> None:
+    apply_env(monkeypatch)
+    monkeypatch.setenv("TB_CONFIG_FILE", "config/live_testnet.yaml")
+    captured = {}
+
+    class FakeRuntimeContainer:
+        async def live_preflight(self) -> dict[str, object]:
+            captured["called"] = True
+            return {"mode": "live", "ws_auth_ok": True}
+
+        async def shutdown(self) -> None:
+            captured["shutdown"] = True
+
+    def fake_build_runtime_container(bootstrap, *, mode: RunMode, source=None, start_at=None, end_at=None, speed=None):
+        captured["mode"] = mode
+        return FakeRuntimeContainer()
+
+    monkeypatch.setattr("trading_bot.cli.build_runtime_container", fake_build_runtime_container)
+
+    result = runner.invoke(app, ["live-preflight"])
+
+    assert result.exit_code == 0
+    assert captured["mode"] == RunMode.LIVE
+    assert captured["called"] is True
+    assert captured["shutdown"] is True
+    payload = json.loads(result.stdout)
+    assert payload["ws_auth_ok"] is True
 
 
 def test_replay_command_uses_runtime_container(monkeypatch) -> None:

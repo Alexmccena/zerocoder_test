@@ -32,6 +32,12 @@ class PaperVenue:
         self.ledger = PaperLedger(initial_equity=config.paper.initial_equity_usdt)
         self._orders: dict[str, OrderState] = {}
 
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
     async def submit(self, plan: ExecutionPlan) -> ExecutionResult:
         entry_order = plan.entry_order
         expires_at = None
@@ -113,6 +119,9 @@ class PaperVenue:
             account_state=account_state,
             pnl_snapshot=pnl_snapshot,
         )
+
+    async def drain_pending_updates(self, *, as_of: datetime) -> ExecutionResult:
+        return ExecutionResult(accepted=True)
 
     async def cancel_order(self, order_id: str, *, as_of: datetime) -> ExecutionResult:
         order = self._orders.get(order_id)
