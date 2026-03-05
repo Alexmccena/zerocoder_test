@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -13,8 +13,19 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from structlog.stdlib import BoundLogger
 
+from trading_bot.adapters.exchanges.binance.capabilities import build_binance_capabilities
+from trading_bot.adapters.exchanges.binance.normalizers import (
+    normalize_private_message as normalize_binance_private_message,
+)
+from trading_bot.adapters.exchanges.binance.normalizers import (
+    normalize_public_message as normalize_binance_public_message,
+)
+from trading_bot.adapters.exchanges.binance.private_ws import BinancePrivateWebSocketClient
+from trading_bot.adapters.exchanges.binance.public_ws import BinancePublicWebSocketClient
+from trading_bot.adapters.exchanges.binance.rest import BinanceRestClient
 from trading_bot.adapters.exchanges.bybit.capabilities import build_bybit_capabilities
-from trading_bot.adapters.exchanges.bybit.normalizers import normalize_private_message, normalize_public_message
+from trading_bot.adapters.exchanges.bybit.normalizers import normalize_private_message as normalize_bybit_private_message
+from trading_bot.adapters.exchanges.bybit.normalizers import normalize_public_message as normalize_bybit_public_message
 from trading_bot.adapters.exchanges.bybit.private_ws import BybitPrivateWebSocketClient
 from trading_bot.adapters.exchanges.bybit.public_ws import BybitPublicWebSocketClient
 from trading_bot.adapters.exchanges.bybit.rest import BybitRestClient
@@ -22,14 +33,14 @@ from trading_bot.alerts.service import TelegramAlertService
 from trading_bot.bootstrap.settings import BootstrapSettings
 from trading_bot.config.loader import load_app_config
 from trading_bot.config.schema import AppSettings
-from trading_bot.domain.enums import ExecutionVenueKind, RunMode, ServiceStatus
+from trading_bot.domain.enums import ExchangeName, ExecutionVenueKind, RunMode, ServiceStatus
 from trading_bot.domain.models import HealthReport
 from trading_bot.execution.engine import ExecutionEngine
 from trading_bot.live.venue import LiveVenue
 from trading_bot.llm import LLMAdvisoryService, OpenRouterProvider
 from trading_bot.marketdata.capture import CaptureService
 from trading_bot.marketdata.events import MarketEvent, PrivateStateEvent
-from trading_bot.marketdata.feed import BybitPublicMarketFeed
+from trading_bot.marketdata.feed import ExchangePublicMarketFeed
 from trading_bot.marketdata.snapshots import FeatureProvider, MarketSnapshotBuilder
 from trading_bot.observability.health import HealthChecker
 from trading_bot.observability.logging import configure_logging, shutdown_logging
@@ -59,6 +70,7 @@ from trading_bot.storage.repositories import (
     SignalEventRepository,
 )
 from trading_bot.strategies import build_strategy
+from trading_bot.timeframes import canonicalize_interval, interval_to_bybit
 
 
 @dataclass(slots=True)
@@ -127,6 +139,84 @@ def build_container(bootstrap: BootstrapSettings | None = None) -> AppContainer:
     return AppContainer.build(bootstrap)
 
 
+type ExchangeRestClient = BybitRestClient | BinanceRestClient
+type ExchangePublicWsClient = BybitPublicWebSocketClient | BinancePublicWebSocketClient
+type ExchangePrivateWsClient = BybitPrivateWebSocketClient | BinancePrivateWebSocketClient
+type MessageNormalizer = Callable[[dict[str, Any]], list[object]]
+
+
+@dataclass(slots=True)
+class ExchangeClients:
+    rest_client: ExchangeRestClient
+    public_ws_client: ExchangePublicWsClient
+    private_ws_client: ExchangePrivateWsClient | None
+    public_message_normalizer: MessageNormalizer
+    private_message_normalizer: MessageNormalizer
+    capabilities_builder: Callable[[AppSettings], Any]
+    interval_mapper: Callable[[str], str]
+
+
+def _build_exchange_clients(
+    *,
+    settings: AppSettings,
+    env_settings: BootstrapSettings,
+    metrics: AppMetrics,
+    with_private_state: bool,
+) -> ExchangeClients:
+    exchange = settings.exchange.primary
+    if exchange == ExchangeName.BYBIT:
+        rest_client = BybitRestClient(
+            config=settings,
+            api_key=env_settings.bybit_api_key,
+            api_secret=env_settings.bybit_api_secret,
+            metrics=metrics,
+        )
+        public_ws_client = BybitPublicWebSocketClient(config=settings, metrics=metrics)
+        private_ws_client: ExchangePrivateWsClient | None = None
+        if with_private_state:
+            private_ws_client = BybitPrivateWebSocketClient(
+                config=settings,
+                rest_client=rest_client,
+                metrics=metrics,
+            )
+        return ExchangeClients(
+            rest_client=rest_client,
+            public_ws_client=public_ws_client,
+            private_ws_client=private_ws_client,
+            public_message_normalizer=normalize_bybit_public_message,
+            private_message_normalizer=normalize_bybit_private_message,
+            capabilities_builder=build_bybit_capabilities,
+            interval_mapper=interval_to_bybit,
+        )
+
+    if exchange == ExchangeName.BINANCE:
+        rest_client = BinanceRestClient(
+            config=settings,
+            api_key=env_settings.binance_api_key,
+            api_secret=env_settings.binance_api_secret,
+            metrics=metrics,
+        )
+        public_ws_client = BinancePublicWebSocketClient(config=settings, metrics=metrics)
+        private_ws_client: ExchangePrivateWsClient | None = None
+        if with_private_state:
+            private_ws_client = BinancePrivateWebSocketClient(
+                config=settings,
+                rest_client=rest_client,
+                metrics=metrics,
+            )
+        return ExchangeClients(
+            rest_client=rest_client,
+            public_ws_client=public_ws_client,
+            private_ws_client=private_ws_client,
+            public_message_normalizer=normalize_binance_public_message,
+            private_message_normalizer=normalize_binance_private_message,
+            capabilities_builder=build_binance_capabilities,
+            interval_mapper=canonicalize_interval,
+        )
+
+    raise RuntimeError(f"Unsupported exchange.primary: {exchange.value}")
+
+
 @dataclass(slots=True)
 class CaptureContainer:
     bootstrap: BootstrapSettings
@@ -137,9 +227,9 @@ class CaptureContainer:
     session_factory: async_sessionmaker[AsyncSession]
     redis_client: Redis
     metrics: AppMetrics
-    rest_client: BybitRestClient
-    public_ws_client: BybitPublicWebSocketClient
-    private_ws_client: BybitPrivateWebSocketClient | None
+    rest_client: ExchangeRestClient
+    public_ws_client: ExchangePublicWsClient
+    private_ws_client: ExchangePrivateWsClient | None
     capture_service: CaptureService
 
     @classmethod
@@ -159,18 +249,15 @@ class CaptureContainer:
         db_engine = build_async_engine(loaded.settings.storage.postgres_dsn)
         session_factory = create_session_factory(db_engine)
         redis_client = build_redis_client(loaded.settings.storage.redis_dsn)
-        rest_client = BybitRestClient(
-            config=loaded.settings,
-            api_key=env_settings.bybit_api_key,
-            api_secret=env_settings.bybit_api_secret,
+        exchange_clients = _build_exchange_clients(
+            settings=loaded.settings,
+            env_settings=env_settings,
             metrics=metrics,
+            with_private_state=loaded.settings.exchange.private_state_enabled,
         )
-        public_ws_client = BybitPublicWebSocketClient(config=loaded.settings, metrics=metrics)
-        private_ws_client = (
-            BybitPrivateWebSocketClient(config=loaded.settings, rest_client=rest_client, metrics=metrics)
-            if loaded.settings.exchange.private_state_enabled
-            else None
-        )
+        rest_client = exchange_clients.rest_client
+        public_ws_client = exchange_clients.public_ws_client
+        private_ws_client = exchange_clients.private_ws_client
         archive_writer = ParquetArchiveWriter(
             root=Path(loaded.settings.storage.market_archive_root),
             compression=loaded.settings.storage.parquet_compression,
@@ -188,7 +275,7 @@ class CaptureContainer:
 
         async def stream_public_events() -> AsyncIterator[MarketEvent]:
             async for message in public_ws_client.stream(loaded.settings.symbols.allowlist):
-                for event in normalize_public_message(message):
+                for event in exchange_clients.public_message_normalizer(message):
                     if isinstance(event, MarketEvent):
                         yield event
 
@@ -196,7 +283,7 @@ class CaptureContainer:
             if private_ws_client is None:
                 return
             async for message in private_ws_client.stream():
-                for event in normalize_private_message(message):
+                for event in exchange_clients.private_message_normalizer(message):
                     if isinstance(event, PrivateStateEvent):
                         yield event
 
@@ -214,7 +301,7 @@ class CaptureContainer:
             fills=fills,
             positions=positions,
             archive_writer=archive_writer,
-            capabilities=build_bybit_capabilities(loaded.settings),
+            capabilities=exchange_clients.capabilities_builder(loaded.settings),
             fetch_instruments=lambda: rest_client.fetch_instruments(loaded.settings.symbols.allowlist),
             stream_public_events=stream_public_events,
             fetch_open_interest=rest_client.fetch_open_interest,
@@ -275,8 +362,8 @@ class RuntimeContainer:
     control_plane: RuntimeControlPlane
     telegram_service: TelegramAlertService | None = None
     llm_service: LLMAdvisoryService | None = None
-    live_rest_client: BybitRestClient | None = None
-    live_private_ws_client: BybitPrivateWebSocketClient | None = None
+    live_rest_client: ExchangeRestClient | None = None
+    live_private_ws_client: ExchangePrivateWsClient | None = None
 
     @classmethod
     def build(
@@ -323,18 +410,26 @@ class RuntimeContainer:
 
         snapshot_builder = MarketSnapshotBuilder(stale_after_seconds=loaded.settings.risk.stale_market_data_seconds)
         feature_provider = FeatureProvider(config=loaded.settings)
-        live_rest_client: BybitRestClient | None = None
-        live_private_ws_client: BybitPrivateWebSocketClient | None = None
+        live_rest_client: ExchangeRestClient | None = None
+        live_private_ws_client: ExchangePrivateWsClient | None = None
+        exchange_clients: ExchangeClients | None = None
 
         if mode in {RunMode.PAPER, RunMode.LIVE}:
-            rest_client = BybitRestClient(
-                config=loaded.settings,
-                api_key=env_settings.bybit_api_key,
-                api_secret=env_settings.bybit_api_secret,
+            exchange_clients = _build_exchange_clients(
+                settings=loaded.settings,
+                env_settings=env_settings,
                 metrics=metrics,
+                with_private_state=mode == RunMode.LIVE and loaded.settings.exchange.private_state_enabled,
             )
-            public_ws_client = BybitPublicWebSocketClient(config=loaded.settings, metrics=metrics)
-            market_feed = BybitPublicMarketFeed(rest_client=rest_client, public_ws_client=public_ws_client)
+            market_feed = ExchangePublicMarketFeed(
+                rest_client=exchange_clients.rest_client,
+                public_ws_client=exchange_clients.public_ws_client,
+                public_message_normalizer=exchange_clients.public_message_normalizer,
+                interval_mapper=exchange_clients.interval_mapper,
+            )
+            if mode == RunMode.LIVE:
+                live_rest_client = exchange_clients.rest_client
+                live_private_ws_client = exchange_clients.private_ws_client
             clock = WallClock()
             strategy_start_at = None
         else:
@@ -359,22 +454,14 @@ class RuntimeContainer:
         strategy = build_strategy(config=loaded.settings, runtime_state_provider=lambda: runtime_state.state)
         risk_engine = BasicRiskEngine(config=loaded.settings)
         if mode == RunMode.LIVE:
-            live_rest_client = BybitRestClient(
-                config=loaded.settings,
-                api_key=env_settings.bybit_api_key,
-                api_secret=env_settings.bybit_api_secret,
-                metrics=metrics,
-            )
-            live_private_ws_client = BybitPrivateWebSocketClient(
-                config=loaded.settings,
-                rest_client=live_rest_client,
-                metrics=metrics,
-            )
+            if exchange_clients is None or live_rest_client is None or live_private_ws_client is None:
+                raise RuntimeError("live runtime requires private exchange clients")
             venue = LiveVenue(
                 config=loaded.settings,
                 metrics=metrics,
                 rest_client=live_rest_client,
                 private_ws_client=live_private_ws_client,
+                private_message_normalizer=exchange_clients.private_message_normalizer,
             )
         else:
             venue = PaperVenue(config=loaded.settings, metrics=metrics)
@@ -482,7 +569,7 @@ class RuntimeContainer:
         )
         ws_auth_ok = await self.live_private_ws_client.probe_auth(timeout_seconds=5.0)
         if not ws_auth_ok:
-            raise RuntimeError("Bybit private websocket auth probe failed")
+            raise RuntimeError(f"{self.config.exchange.primary.value} private websocket auth probe failed")
 
         instrument_by_symbol = {instrument.symbol: instrument for instrument in instruments}
         missing_symbols = [symbol for symbol in self.config.live.symbol_allowlist if symbol not in instrument_by_symbol]

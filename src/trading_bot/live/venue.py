@@ -3,15 +3,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
+from typing import Any
 
 import httpx
 
-from trading_bot.adapters.exchanges.bybit.normalizers import normalize_private_message
-from trading_bot.adapters.exchanges.bybit.rest import BybitRestClient
 from trading_bot.config.schema import AppSettings
-from trading_bot.domain.enums import ExecutionVenueKind
+from trading_bot.domain.enums import ExchangeName, ExecutionVenueKind
 from trading_bot.domain.models import (
     AccountState,
     ExecutionPlan,
@@ -61,13 +61,15 @@ class LiveVenue:
         *,
         config: AppSettings,
         metrics: AppMetrics,
-        rest_client: BybitRestClient,
-        private_ws_client,
+        rest_client: Any,
+        private_ws_client: Any,
+        private_message_normalizer: Callable[[dict[str, Any]], list[object]],
     ) -> None:
         self.config = config
         self.metrics = metrics
         self.rest_client = rest_client
         self.private_ws_client = private_ws_client
+        self.private_message_normalizer = private_message_normalizer
         self._state = LiveVenueStateCache(stale_after_seconds=config.live.private_state_stale_after_seconds)
         self._instruments: dict[str, object] = {}
         self._private_pump_task: asyncio.Task[None] | None = None
@@ -220,7 +222,10 @@ class LiveVenue:
             if intent.stop_price is not None
             else None
         )
-        bybit_order_type = "market" if intent.order_type in {"market", "stop_market"} else "limit"
+        venue_order_type = intent.order_type
+        if self.config.exchange.primary == ExchangeName.BYBIT and intent.order_type == "stop_market":
+            # Bybit stop-market closes are sent as market+trigger metadata.
+            venue_order_type = "market"
         trigger_direction: int | None = None
         if intent.order_type == "stop_market" and stop_price is not None:
             trigger_direction = 2 if intent.side == "sell" else 1
@@ -229,7 +234,7 @@ class LiveVenue:
             response = await self.rest_client.create_order(
                 symbol=intent.symbol,
                 side=intent.side,
-                order_type=bybit_order_type,
+                order_type=venue_order_type,
                 quantity=str(quantity),
                 client_order_id=intent.client_order_id,
                 price=str(price) if price is not None else None,
@@ -253,7 +258,7 @@ class LiveVenue:
             response = await self.rest_client.create_order(
                 symbol=intent.symbol,
                 side=intent.side,
-                order_type=bybit_order_type,
+                order_type=venue_order_type,
                 quantity=str(quantity),
                 client_order_id=intent.client_order_id,
                 price=str(price) if price is not None else None,
@@ -347,7 +352,7 @@ class LiveVenue:
                 self.metrics.record_live_private_ws_gap()
 
         async for message in self.private_ws_client.stream(on_connection_state_change=handle_connection_state):
-            for event in normalize_private_message(message):
+            for event in self.private_message_normalizer(message):
                 event_ts = getattr(event, "event_ts", datetime.now(timezone.utc))
                 self._state.note_private_event(event_ts=event_ts)
                 fragment = self._event_to_execution_result(event)

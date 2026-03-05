@@ -30,6 +30,8 @@ class BootstrapSettings(BaseSettings):
     http_port: int = 8080
     bybit_api_key: str | None = None
     bybit_api_secret: str | None = None
+    binance_api_key: str | None = None
+    binance_api_secret: str | None = None
     telegram_bot_token: str | None = None
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

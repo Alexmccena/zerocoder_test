@@ -30,8 +30,10 @@ Required environment variables:
 - `TB_LOG_LEVEL`
 - `TB_HTTP_HOST`
 - `TB_HTTP_PORT`
-- `TB_BYBIT_API_KEY` (required only when `exchange.private_state_enabled=true`)
-- `TB_BYBIT_API_SECRET` (required only when `exchange.private_state_enabled=true`)
+- `TB_BYBIT_API_KEY` (required when `exchange.primary=bybit` and `exchange.private_state_enabled=true`)
+- `TB_BYBIT_API_SECRET` (required when `exchange.primary=bybit` and `exchange.private_state_enabled=true`)
+- `TB_BINANCE_API_KEY` (required when `exchange.primary=binance` and `exchange.private_state_enabled=true`)
+- `TB_BINANCE_API_SECRET` (required when `exchange.primary=binance` and `exchange.private_state_enabled=true`)
 - `TB_TELEGRAM_BOT_TOKEN` (required only when `alerts.telegram.enabled=true`)
 - `TB_OPENROUTER_API_KEY` (required only when `llm.enabled=true` and `llm.provider=openrouter`)
 - `TB_OPENROUTER_BASE_URL` (optional override, default `https://openrouter.ai/api/v1`)
@@ -131,7 +133,7 @@ This repository now contains the foundation layer, phase-2 capture, phase-3 pape
 - PostgreSQL persistence for instruments and account/private state
 - Parquet market archive writer
 - phase-3 paper venue, replay reader, and shared backtest runtime
-- phase-6 Bybit live execution venue, startup recovery, rollout guards, and `live-preflight`
+- phase-6 live execution venue with Bybit and Binance Futures adapters, startup recovery, rollout guards, and `live-preflight`
 - phase-7 advisory LLM layer (OpenRouter provider, workflow queue, budget caps, Telegram analyze/playbook)
 
 Paper soak instructions live in [docs/runbooks/paper_soak.md](docs/runbooks/paper_soak.md).

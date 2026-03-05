@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from trading_bot.bootstrap.settings import BootstrapSettings, project_root
 from trading_bot.config.schema import AppSettings
-from trading_bot.domain.enums import RunMode
+from trading_bot.domain.enums import ExchangeName, RunMode
 
 
 class ConfigLoadError(RuntimeError):
@@ -287,13 +287,23 @@ def build_env_overrides(env_settings: BootstrapSettings) -> dict[str, Any]:
 
 
 def validate_runtime_secrets(settings: AppSettings, env_settings: BootstrapSettings) -> None:
-    if settings.runtime.mode in {RunMode.CAPTURE, RunMode.LIVE} and settings.exchange.private_state_enabled and (
-        not env_settings.bybit_api_key or not env_settings.bybit_api_secret
-    ):
-        raise ConfigLoadError(
-            "TB_BYBIT_API_KEY and TB_BYBIT_API_SECRET are required when "
-            "exchange.private_state_enabled=true"
-        )
+    if settings.runtime.mode in {RunMode.CAPTURE, RunMode.LIVE} and settings.exchange.private_state_enabled:
+        if settings.exchange.primary == ExchangeName.BYBIT:
+            if not env_settings.bybit_api_key or not env_settings.bybit_api_secret:
+                raise ConfigLoadError(
+                    "TB_BYBIT_API_KEY and TB_BYBIT_API_SECRET are required when "
+                    "exchange.primary=bybit and exchange.private_state_enabled=true"
+                )
+        elif settings.exchange.primary == ExchangeName.BINANCE:
+            if not env_settings.binance_api_key or not env_settings.binance_api_secret:
+                raise ConfigLoadError(
+                    "TB_BINANCE_API_KEY and TB_BINANCE_API_SECRET are required when "
+                    "exchange.primary=binance and exchange.private_state_enabled=true"
+                )
+        else:
+            raise ConfigLoadError(
+                f"Private-state credentials are not configured for exchange.primary={settings.exchange.primary.value}"
+            )
     telegram = settings.alerts.telegram
     if settings.runtime.mode in {RunMode.PAPER, RunMode.LIVE} and telegram.enabled:
         if not env_settings.telegram_bot_token:

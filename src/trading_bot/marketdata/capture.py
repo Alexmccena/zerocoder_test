@@ -10,9 +10,8 @@ from typing import Any
 from redis.asyncio import Redis
 from structlog.stdlib import BoundLogger
 
-from trading_bot.adapters.exchanges.bybit.normalizers import normalize_fill
 from trading_bot.config.schema import AppSettings
-from trading_bot.domain.models import AccountState, ExchangeCapabilities
+from trading_bot.domain.models import AccountState, ExchangeCapabilities, FillState
 from trading_bot.marketdata.cache import publish_market_event_cache, publish_private_event_cache, publish_private_snapshot
 from trading_bot.marketdata.events import (
     ExecutionEvent,
@@ -221,18 +220,19 @@ class CaptureService:
         elif isinstance(event, OrderUpdateEvent):
             await self.orders.upsert_from_exchange(run_session_id=run_session_id, order=event.order)
         elif isinstance(event, ExecutionEvent):
-            fill = normalize_fill(
-                {
-                    "orderId": event.order_id,
-                    "symbol": event.symbol,
-                    "side": event.side,
-                    "execPrice": event.price,
-                    "execQty": event.quantity,
-                    "execFee": event.fee,
-                    "execType": event.liquidity_type,
-                    "execId": event.exchange_fill_id,
-                    "execTime": int(event.filled_at.timestamp() * 1000),
-                }
+            fill = FillState(
+                order_id=event.order_id,
+                exchange_name=event.exchange_name,
+                symbol=event.symbol,
+                side=event.side,
+                price=event.price,
+                quantity=event.quantity,
+                fee=event.fee,
+                liquidity_type=event.liquidity_type,
+                is_maker=event.liquidity_type == "maker",
+                exchange_fill_id=event.exchange_fill_id,
+                raw_payload=event.raw_payload,
+                filled_at=event.filled_at,
             )
             await self.fills.insert_if_new(fill)
         elif isinstance(event, PositionUpdateEvent):
