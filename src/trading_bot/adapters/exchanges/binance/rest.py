@@ -91,7 +91,7 @@ class BinanceRestClient:
         params: dict[str, Any] | None = None,
         authenticated: bool = False,
         api_key_only: bool = False,
-    ) -> dict[str, Any]:
+    ) -> Any:
         method_upper = method.upper()
         request_params = {key: value for key, value in (params or {}).items() if value is not None}
 
@@ -206,11 +206,25 @@ class BinanceRestClient:
         if symbol is not None:
             params["symbol"] = symbol
         rows = await self._request("/fapi/v1/openOrders", params=params, authenticated=True)
-        return [normalize_order(row) for row in rows]
+        if not isinstance(rows, list):
+            raise RuntimeError("Binance API error for /fapi/v1/openOrders: expected list payload")
+        orders: list[OrderState] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("Binance API error for /fapi/v1/openOrders: expected order object")
+            orders.append(normalize_order(row))
+        return orders
 
     async def fetch_positions(self) -> list[PositionState]:
         rows = await self._request("/fapi/v2/positionRisk", authenticated=True)
-        return [normalize_position(row) for row in rows]
+        if not isinstance(rows, list):
+            raise RuntimeError("Binance API error for /fapi/v2/positionRisk: expected list payload")
+        positions: list[PositionState] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("Binance API error for /fapi/v2/positionRisk: expected position object")
+            positions.append(normalize_position(row))
+        return positions
 
     async def create_order(
         self,
@@ -229,14 +243,17 @@ class BinanceRestClient:
         trigger_direction: int | None = None,
     ) -> dict[str, Any]:
         del position_idx, trigger_direction  # Binance futures does not use these fields in one-way mode.
+        normalized_type = order_type.lower()
+        if close_on_trigger and normalized_type != "stop_market":
+            raise ValueError("close_on_trigger is only supported for stop_market orders on Binance")
         payload: dict[str, Any] = {
             "symbol": symbol,
             "side": "BUY" if side.lower() == "buy" else "SELL",
             "newClientOrderId": client_order_id,
-            "reduceOnly": "true" if reduce_only else "false",
             "newOrderRespType": "ACK",
         }
-        normalized_type = order_type.lower()
+        if reduce_only and not close_on_trigger:
+            payload["reduceOnly"] = "true"
         if normalized_type == "market":
             payload["type"] = "MARKET"
             payload["quantity"] = quantity
@@ -246,9 +263,11 @@ class BinanceRestClient:
             payload["price"] = price
             payload["timeInForce"] = time_in_force or "GTC"
         elif normalized_type == "stop_market":
+            if trigger_price is None:
+                raise ValueError("trigger_price is required for stop_market orders")
             payload["type"] = "STOP_MARKET"
             payload["stopPrice"] = trigger_price
-            payload["workingType"] = "MARK_PRICE"
+            payload["workingType"] = "CONTRACT_PRICE"
             if close_on_trigger:
                 payload["closePosition"] = "true"
             else:

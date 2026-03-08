@@ -109,7 +109,14 @@ class BracketManager:
             bracket = self._brackets.get(position.symbol)
             if bracket is None:
                 continue
+            if bracket.status == "pending_entry" and position.status == "open" and position.quantity > 0:
+                armed = await self._arm_bracket(bracket=bracket, position=position, as_of=as_of)
+                _merge_results(aggregate, armed)
+                continue
             if position.status != "open" or position.quantity <= 0:
+                if bracket.status == "pending_entry":
+                    # Entry can be acknowledged before position appears; keep pending brackets intact.
+                    continue
                 if bracket.status != "closed":
                     cancelled = await self.cancel_for_symbol(position.symbol, as_of=as_of)
                     _merge_results(aggregate, cancelled)

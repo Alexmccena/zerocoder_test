@@ -226,6 +226,7 @@ class LiveVenue:
         if self.config.exchange.primary == ExchangeName.BYBIT and intent.order_type == "stop_market":
             # Bybit stop-market closes are sent as market+trigger metadata.
             venue_order_type = "market"
+        close_on_trigger = intent.order_type == "stop_market"
         trigger_direction: int | None = None
         if intent.order_type == "stop_market" and stop_price is not None:
             trigger_direction = 2 if intent.side == "sell" else 1
@@ -240,7 +241,7 @@ class LiveVenue:
                 price=str(price) if price is not None else None,
                 trigger_price=str(stop_price) if stop_price is not None else None,
                 reduce_only=intent.reduce_only,
-                close_on_trigger=intent.order_type == "stop_market",
+                close_on_trigger=close_on_trigger,
                 time_in_force="GTC" if intent.order_type in {"limit", "stop_market"} else None,
                 trigger_direction=trigger_direction,
             )
@@ -264,7 +265,7 @@ class LiveVenue:
                 price=str(price) if price is not None else None,
                 trigger_price=str(stop_price) if stop_price is not None else None,
                 reduce_only=intent.reduce_only,
-                close_on_trigger=intent.order_type == "stop_market",
+                close_on_trigger=close_on_trigger,
                 time_in_force="GTC" if intent.order_type in {"limit", "stop_market"} else None,
                 trigger_direction=trigger_direction,
             )
@@ -282,7 +283,7 @@ class LiveVenue:
             price=price,
             stop_price=stop_price,
             reduce_only=intent.reduce_only,
-            exchange_order_id=response.get("orderId"),
+            exchange_order_id=(str(response.get("orderId")) if response.get("orderId") is not None else None),
             client_order_id=intent.client_order_id,
             intent_id=intent.intent_id,
             time_in_force="GTC" if intent.order_type in {"limit", "stop_market"} else "IOC",

@@ -365,6 +365,10 @@ def normalize_private_message(message: dict[str, Any]) -> list[object]:
         account_data = message.get("a", {})
         balances = account_data.get("B", [])
         balance = next((row for row in balances if row.get("a") == "USDT"), balances[0] if balances else {})
+        unrealized_pnl = sum(
+            (to_decimal(position_row.get("up", "0")) for position_row in account_data.get("P", [])),
+            start=Decimal("0"),
+        )
         events.append(
             WalletEvent(
                 exchange_name=ExchangeName.BINANCE,
@@ -373,7 +377,7 @@ def normalize_private_message(message: dict[str, Any]) -> list[object]:
                 available_balance=to_decimal(balance.get("cw", "0")),
                 equity=to_decimal(balance.get("wb", "0")) + to_decimal(balance.get("bc", "0")),
                 margin_balance=to_decimal(balance.get("wb", "0")),
-                unrealized_pnl=to_decimal(account_data.get("m", "0")),
+                unrealized_pnl=unrealized_pnl,
                 account_type="FUTURES_USDT",
                 raw_payload=message,
             )
