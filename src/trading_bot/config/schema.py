@@ -203,11 +203,45 @@ class SmcScalperV1Config(ConfigModel):
         return canonicalize_interval(value)
 
 
+class GridPairConfig(ConfigModel):
+    symbol: str = Field(min_length=1)
+    leverage: Decimal = Field(default=Decimal("1"), ge=1)
+    budget_quote: Decimal = Field(gt=0)
+    stack_size_quote: Decimal = Field(gt=0)
+    corridor_pct: float = Field(gt=0)
+    take_profit_pct: float = Field(gt=0)
+    orders_per_stack: int = Field(default=40, ge=1)
+    lower_threshold_pct: float = Field(default=12.0, ge=0)
+    upper_threshold_pct: float = Field(default=1.0, ge=0)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_stack_allocation(self) -> "GridPairConfig":
+        if self.stack_size_quote > self.budget_quote:
+            raise ValueError("stack_size_quote must not exceed budget_quote")
+        return self
+
+    @property
+    def budget_margin_quote(self) -> Decimal:
+        return self.budget_quote / self.leverage
+
+    @property
+    def stack_margin_quote(self) -> Decimal:
+        return self.stack_size_quote / self.leverage
+
+
+class GridDcaV1Config(ConfigModel):
+    pairs: list[GridPairConfig] = Field(default_factory=list)
+    max_actions_per_tick: int = Field(default=8, ge=1, le=500)
+    persist_events: bool = True
+
+
 class StrategyDefaultsConfig(ConfigModel):
     name: str = "phase3_placeholder"
     default_timeframe: str = "1m"
     placeholder: PlaceholderStrategyConfig = Field(default_factory=PlaceholderStrategyConfig)
     smc_scalper_v1: SmcScalperV1Config = Field(default_factory=SmcScalperV1Config)
+    grid_dca_v1: GridDcaV1Config = Field(default_factory=GridDcaV1Config)
 
     @model_validator(mode="before")
     @classmethod

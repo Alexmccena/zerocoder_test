@@ -231,6 +231,23 @@ class AppMetrics:
             "Estimated live total open exposure in USDT.",
             registry=self.registry,
         )
+        self.grid_actions_total = Counter(
+            "tb_grid_actions_total",
+            "Number of grid runtime actions.",
+            ["action"],
+            registry=self.registry,
+        )
+        self.grid_pairs_managed = Gauge(
+            "tb_grid_pairs_managed",
+            "Number of pairs currently tracked by grid runtime.",
+            registry=self.registry,
+        )
+        self.grid_recovery_total = Counter(
+            "tb_grid_recovery_total",
+            "Number of grid recovery outcomes.",
+            ["outcome"],
+            registry=self.registry,
+        )
         self.llm_requests_total = Counter(
             "tb_llm_requests_total",
             "Number of LLM advisory requests.",
@@ -382,6 +399,15 @@ class AppMetrics:
 
     def set_live_total_exposure_usdt(self, value: float) -> None:
         self.live_total_exposure_usdt.set(max(value, 0.0))
+
+    def record_grid_action(self, *, action: str) -> None:
+        self.grid_actions_total.labels(action=action).inc()
+
+    def set_grid_pairs_managed(self, value: int) -> None:
+        self.grid_pairs_managed.set(max(value, 0))
+
+    def record_grid_recovery(self, *, outcome: str) -> None:
+        self.grid_recovery_total.labels(outcome=outcome).inc()
 
     def record_llm_request(
         self,

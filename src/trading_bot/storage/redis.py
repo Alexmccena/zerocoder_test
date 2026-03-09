@@ -67,6 +67,10 @@ async def publish_runtime_open_orders(client: Redis, *, run_session_id: str, pay
     await set_json(client, f"tb:runtime:{run_session_id}:open_orders", payload)
 
 
+async def publish_runtime_grid_pairs(client: Redis, *, run_session_id: str, payload: dict[str, Any]) -> None:
+    await set_json(client, f"tb:runtime:{run_session_id}:grid_pairs", payload)
+
+
 async def publish_runtime_snapshot(
     client: Redis,
     *,

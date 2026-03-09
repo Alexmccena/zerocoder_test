@@ -129,6 +129,20 @@ strategy:
       max_hold_bars: 10
       invalidation_buffer_bps: 2
       take_profit_rr: 2.0
+  grid_dca_v1:
+    max_actions_per_tick: 8
+    persist_events: true
+    pairs:
+      - symbol: BTCUSDT
+        leverage: 5
+        budget_quote: 600
+        stack_size_quote: 300
+        corridor_pct: 10
+        take_profit_pct: 0.5
+        orders_per_stack: 40
+        lower_threshold_pct: 12
+        upper_threshold_pct: 1
+        enabled: true
 
 risk:
   max_open_positions: 2

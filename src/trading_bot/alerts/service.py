@@ -15,6 +15,7 @@ from trading_bot.runtime.control import (
     RuntimeRiskSnapshot,
     RuntimeStatusSnapshot,
 )
+from trading_bot.runtime.grid_runtime import GridRuntime
 
 from .protocols import OperationalAlertSink
 from .telegram import TelegramBotClient, TelegramInboundMessage
@@ -165,6 +166,27 @@ def format_risk_snapshot(snapshot: RuntimeRiskSnapshot) -> str:
     return "\n".join(lines)
 
 
+def format_grid_pairs(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return "Grid pairs: none"
+    lines = ["Grid pairs"]
+    for row in rows:
+        lines.append(
+            (
+                f"{row.get('symbol')}: "
+                f"enabled={'yes' if row.get('enabled') else 'no'} "
+                f"paused={'yes' if row.get('paused') else 'no'} "
+                f"lev={row.get('leverage')} "
+                f"stacks={row.get('active_stacks')}/{row.get('max_stacks')} "
+                f"budget={row.get('budget_quote')} "
+                f"margin={row.get('budget_margin_quote')} "
+                f"buy_orders={row.get('working_buy_orders')} "
+                f"pending={row.get('pending_buy_levels')}"
+            )
+        )
+    return "\n".join(lines)
+
+
 class TelegramCommandHandler:
     def __init__(
         self,
@@ -173,11 +195,13 @@ class TelegramCommandHandler:
         control_plane: RuntimeControlPlane,
         metrics: AppMetrics,
         llm_service: AdvisoryCommandService | None = None,
+        grid_runtime: GridRuntime | None = None,
     ) -> None:
         self._control_plane = control_plane
         self._metrics = metrics
         self._telegram = config.alerts.telegram
         self._llm_service = llm_service
+        self._grid_runtime = grid_runtime
 
     async def handle_message(self, message: TelegramInboundMessage) -> CommandHandlingResult | None:
         parsed = self._parse_command_and_args(message.text)
@@ -196,19 +220,81 @@ class TelegramCommandHandler:
         requested_at = datetime.now(UTC)
         if command == "status":
             self._metrics.record_telegram_command(command=command, outcome="handled")
+            text = format_status_snapshot(self._control_plane.build_status_snapshot())
+            if self._grid_runtime is not None and self._grid_runtime.is_enabled:
+                text = f"{text}\n\n{format_grid_pairs(self._grid_runtime.list_pairs())}"
             return CommandHandlingResult(
                 command=command,
                 outcome="handled",
-                reply_text=format_status_snapshot(self._control_plane.build_status_snapshot()),
+                reply_text=text,
                 broadcast_text=None,
             )
         if command == "risk":
             self._metrics.record_telegram_command(command=command, outcome="handled")
+            text = format_risk_snapshot(self._control_plane.build_risk_snapshot())
+            if self._grid_runtime is not None and self._grid_runtime.is_enabled:
+                text = f"{text}\n\n{format_grid_pairs(self._grid_runtime.list_pairs())}"
             return CommandHandlingResult(
                 command=command,
                 outcome="handled",
-                reply_text=format_risk_snapshot(self._control_plane.build_risk_snapshot()),
+                reply_text=text,
                 broadcast_text=None,
+            )
+        if command == "pairs":
+            if self._grid_runtime is None or not self._grid_runtime.is_enabled:
+                self._metrics.record_telegram_command(command=command, outcome="disabled")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="disabled",
+                    reply_text="Grid runtime is disabled.",
+                    broadcast_text=None,
+                )
+            self._metrics.record_telegram_command(command=command, outcome="handled")
+            return CommandHandlingResult(
+                command=command,
+                outcome="handled",
+                reply_text=format_grid_pairs(self._grid_runtime.list_pairs()),
+                broadcast_text=None,
+            )
+        if command == "pair":
+            if self._grid_runtime is None or not self._grid_runtime.is_enabled:
+                self._metrics.record_telegram_command(command=command, outcome="disabled")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="disabled",
+                    reply_text="Grid runtime is disabled.",
+                    broadcast_text=None,
+                )
+            verb, _, tail = args.partition(" ")
+            verb = verb.strip().lower()
+            symbol = tail.strip().upper()
+            if verb not in {"add", "pause", "resume", "stop"} or not symbol:
+                self._metrics.record_telegram_command(command=command, outcome="invalid")
+                return CommandHandlingResult(
+                    command=command,
+                    outcome="invalid",
+                    reply_text="Usage: /pair add|pause|resume|stop <SYMBOL>",
+                    broadcast_text=None,
+                )
+            if verb == "add":
+                success, reply = await self._grid_runtime.add_pair(symbol=symbol)
+            elif verb == "pause":
+                success, reply = await self._grid_runtime.pause_pair(symbol=symbol)
+            elif verb == "resume":
+                success, reply = await self._grid_runtime.resume_pair(symbol=symbol)
+            else:
+                success, reply = await self._grid_runtime.stop_pair(symbol=symbol)
+            outcome = "handled" if success else "invalid"
+            self._metrics.record_telegram_command(command=f"pair_{verb}", outcome=outcome)
+            return CommandHandlingResult(
+                command=command,
+                outcome=outcome,
+                reply_text=reply,
+                broadcast_text=_command_broadcast_text(
+                    command=f"pair_{verb}",
+                    outcome=outcome,
+                    message=message,
+                ) if success else None,
             )
         if command == "pause":
             reply = self._control_plane.pause(
@@ -348,7 +434,7 @@ class TelegramCommandHandler:
             outcome="unknown",
             reply_text=(
                 "Unknown command. Supported: /status /risk /pause /resume /flatten "
-                "/analyze /playbook"
+                "/pairs /pair /analyze /playbook"
             ),
             broadcast_text=None,
         )
@@ -382,6 +468,7 @@ class TelegramAlertService(OperationalAlertSink):
         metrics: AppMetrics,
         control_plane: RuntimeControlPlane,
         llm_service: AdvisoryCommandService | None = None,
+        grid_runtime: GridRuntime | None = None,
         client: TelegramBotClient | None = None,
     ) -> None:
         self._telegram = config.alerts.telegram
@@ -396,6 +483,7 @@ class TelegramAlertService(OperationalAlertSink):
             control_plane=control_plane,
             metrics=metrics,
             llm_service=llm_service,
+            grid_runtime=grid_runtime,
         )
         self._offset: int | None = None
 

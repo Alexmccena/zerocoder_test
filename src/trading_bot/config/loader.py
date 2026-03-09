@@ -125,6 +125,11 @@ def _default_strategy_document() -> dict[str, Any]:
                 "take_profit_rr": 2.0,
             },
         },
+        "grid_dca_v1": {
+            "pairs": [],
+            "max_actions_per_tick": 8,
+            "persist_events": True,
+        },
     }
 
 
@@ -146,11 +151,15 @@ def _normalize_strategy_document(raw: dict[str, Any] | None) -> dict[str, Any]:
     smc = strategy.pop("smc_scalper_v1", {})
     if not isinstance(smc, dict):
         smc = {}
+    grid = strategy.pop("grid_dca_v1", {})
+    if not isinstance(grid, dict):
+        grid = {}
 
     normalized = _default_strategy_document()
     normalized = deep_merge(normalized, strategy)
     normalized["placeholder"] = deep_merge(normalized["placeholder"], placeholder)
     normalized["smc_scalper_v1"] = deep_merge(normalized["smc_scalper_v1"], smc)
+    normalized["grid_dca_v1"] = deep_merge(normalized["grid_dca_v1"], grid)
     return normalized
 
 

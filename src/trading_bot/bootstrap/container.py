@@ -51,6 +51,7 @@ from trading_bot.replay.reader import ReplayReader
 from trading_bot.risk.basic import BasicRiskEngine
 from trading_bot.runtime.clock import BacktestClock, ReplayClock, WallClock
 from trading_bot.runtime.control import RuntimeControlPlane
+from trading_bot.runtime.grid_runtime import GridRuntime
 from trading_bot.runtime.runner import RuntimeRunner
 from trading_bot.runtime.state import RuntimeStateStore
 from trading_bot.storage.db import build_async_engine, create_session_factory, ping_database
@@ -60,6 +61,10 @@ from trading_bot.storage.repositories import (
     AccountSnapshotRepository,
     ConfigSnapshotRepository,
     FillRepository,
+    GridEventRepository,
+    GridOrderLinkRepository,
+    GridPairProfileRepository,
+    GridPairSnapshotRepository,
     InstrumentRepository,
     LLMAdviceRepository,
     OrderRepository,
@@ -407,6 +412,10 @@ class RuntimeContainer:
         account_snapshots = AccountSnapshotRepository(session_factory)
         pnl_snapshots = PnlSnapshotRepository(session_factory)
         llm_advice = LLMAdviceRepository(session_factory)
+        grid_pair_profiles = GridPairProfileRepository(session_factory)
+        grid_pair_snapshots = GridPairSnapshotRepository(session_factory)
+        grid_order_links = GridOrderLinkRepository(session_factory)
+        grid_events = GridEventRepository(session_factory)
 
         snapshot_builder = MarketSnapshotBuilder(stale_after_seconds=loaded.settings.risk.stale_market_data_seconds)
         feature_provider = FeatureProvider(config=loaded.settings)
@@ -466,6 +475,19 @@ class RuntimeContainer:
         else:
             venue = PaperVenue(config=loaded.settings, metrics=metrics)
         execution_engine = ExecutionEngine(config=loaded.settings, venue=venue)
+        grid_runtime: GridRuntime | None = None
+        if loaded.settings.strategy.name == "grid_dca_v1":
+            grid_runtime = GridRuntime(
+                config=loaded.settings,
+                strategy=strategy,
+                state_store=runtime_state,
+                execution_engine=execution_engine,
+                metrics=metrics,
+                profiles_repo=grid_pair_profiles,
+                snapshots_repo=grid_pair_snapshots,
+                links_repo=grid_order_links,
+                events_repo=grid_events,
+            )
         llm_service: LLMAdvisoryService | None = None
         if loaded.settings.llm.enabled and loaded.settings.llm.provider == "openrouter":
             if env_settings.openrouter_api_key:
@@ -510,6 +532,7 @@ class RuntimeContainer:
             strategy_start_at=strategy_start_at,
             control_plane=control_plane,
             llm_service=llm_service,
+            grid_runtime=grid_runtime,
         )
         telegram_service = None
         if mode in {RunMode.PAPER, RunMode.LIVE} and loaded.settings.alerts.telegram.enabled and env_settings.telegram_bot_token is not None:
@@ -520,6 +543,7 @@ class RuntimeContainer:
                 metrics=metrics,
                 control_plane=control_plane,
                 llm_service=llm_service,
+                grid_runtime=grid_runtime,
             )
             runtime_runner.alert_sink = telegram_service
             if llm_service is not None:

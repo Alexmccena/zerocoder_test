@@ -1,0 +1,66 @@
+runtime:
+  mode: live
+  environment: prod
+  dry_run: false
+
+exchange:
+  primary: binance
+  market_type: linear_perp
+  testnet: false
+  private_state_enabled: true
+
+symbols:
+  allowlist:
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT
+
+live:
+  execution_enabled: true
+  allow_mainnet: false
+  symbol_allowlist:
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT
+  max_order_notional_usdt: 100
+  max_position_notional_usdt: 1000
+  max_total_exposure_usdt: 3000
+  startup_recovery_policy: halt
+
+strategy:
+  name: grid_dca_v1
+  default_timeframe: 1m
+  grid_dca_v1:
+    max_actions_per_tick: 8
+    persist_events: true
+    pairs:
+      - symbol: BTCUSDT
+        leverage: 5
+        budget_quote: 600
+        stack_size_quote: 300
+        corridor_pct: 10
+        take_profit_pct: 0.5
+        orders_per_stack: 40
+        lower_threshold_pct: 12
+        upper_threshold_pct: 1
+        enabled: true
+      - symbol: ETHUSDT
+        leverage: 5
+        budget_quote: 400
+        stack_size_quote: 200
+        corridor_pct: 10
+        take_profit_pct: 0.5
+        orders_per_stack: 40
+        lower_threshold_pct: 12
+        upper_threshold_pct: 1
+        enabled: true
+      - symbol: SOLUSDT
+        leverage: 5
+        budget_quote: 300
+        stack_size_quote: 150
+        corridor_pct: 10
+        take_profit_pct: 0.5
+        orders_per_stack: 40
+        lower_threshold_pct: 12
+        upper_threshold_pct: 1
+        enabled: true

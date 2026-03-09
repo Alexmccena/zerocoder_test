@@ -1,173 +1,52 @@
 # Костяк торгового бота
 
-Краткий англоязычный обзор: [README.md](README.md)
+- English overview: [README.md](README.md)
+- Карта кодовой базы: [docs/codebase_structure.md](docs/codebase_structure.md)
+- Ранбуки: [docs/runbooks/](docs/runbooks)
 
-## 1. Что это за проект
+Этот репозиторий — рабочий каркас торгового бота: ingestion рыночных данных, признаки, стратегии, риск, paper/replay/backtest и live-контур (Bybit + Binance Futures), плюс эксплуатация через Telegram и опциональный LLM advisory слой (OpenRouter).
 
-Сейчас в репозитории собран не готовый торговый бот, а его базовый технический каркас.
-Этот каркас нужен для того, чтобы дальше без хаоса наращивать:
+## Что уже есть
 
-- подключение к биржам;
-- получение рыночных данных;
-- стратегии;
-- риск-менеджмент;
-- paper trading и live trading;
-- LLM-слой;
-- наблюдаемость и эксплуатацию.
+- Адаптеры Bybit V5 и Binance Futures: REST + public/private WS + нормализация в доменные модели
+- Market data pipeline: WS -> `MarketSnapshot` -> `FeatureSnapshot`
+- `capture` режим: Parquet market archive + снимки в Postgres + latest cache в Redis
+- `paper` венью + `replay` и `backtest` рантаймы
+- `live` венью: отправка ордеров, private state, REST resync, rollout guards, startup recovery, `live-preflight`
+- Telegram ops и LLM advisory workflows (включаются конфигом)
 
-Иными словами, проект уже умеет быть сервисом, но еще не умеет торговать.
+## Быстрый старт (локально)
 
-## 2. Что уже реализовано
+Поднять зависимости и инфраструктуру:
 
-На текущем этапе собраны следующие базовые части:
+```bash
+uv sync
+docker compose up -d
+uv run bot db upgrade
+```
 
-- Python-проект с `src`-layout;
-- управление зависимостями через `uv`;
-- FastAPI-приложение с сервисными endpoint'ами;
-- CLI-интерфейс через `Typer`;
-- конфигурация через YAML + переменные окружения;
-- интеграционные точки для `Postgres` и `Redis`;
-- ORM-модели и миграция базы через `SQLAlchemy` и `Alembic`;
-- structured logging;
-- Prometheus-метрики;
-- health/readiness проверки;
-- тесты на базовый каркас.
+Выбрать overlay-конфиг через `.env` (пример: `TB_CONFIG_FILE=config/dev.yaml` или один из `config/live_*.yaml`) и проверить:
 
-## 3. Что представляет собой корень проекта
+```bash
+uv run bot validate-config
+uv run bot doctor
+```
 
-Текущий нормальный корень проекта:
+## Конфиги
 
-- `C:\Users\user\My_projects\trading_bot`
+Конфиг загружается как: `config/base.yaml` + overlay из `TB_CONFIG_FILE` + env overrides.
 
-Основные директории и файлы:
+Часто используемые overlay-файлы:
 
-- `src/` — исходный код приложения;
-- `config/` — YAML-конфиги;
-- `alembic/` — миграции базы;
-- `tests/` — unit, integration и smoke тесты;
-- `.venv/` — локальное окружение проекта;
-- `pyproject.toml` — описание зависимостей и entrypoint'ов;
-- `docker-compose.yml` — локальный стек с `app`, `postgres`, `redis`;
-- `Dockerfile` — образ приложения;
-- `README.md` — краткий англоязычный обзор;
-- `readme_rus.md` — этот русскоязычный отчет.
+- `config/dev.yaml`: локальная разработка (SMC стратегия, уменьшенные истории).
+- `config/live_testnet.yaml`: безопасный live-testnet (`dry_run=true`, `execution_enabled=false`).
+- `config/live_binance_testnet.yaml`: то же, но принудительно `exchange.primary=binance`.
+- `config/live_prod_micro.yaml`: каркас micro-роллаута на mainnet (`execution_enabled=false`).
+- `config/live_binance_prod_micro_fast.yaml`: Binance mainnet micro конфиг с включенной отправкой ордеров и жесткими notional лимитами (для коротких smoke-тестов).
 
-## 4. Как устроен код по слоям
+## Переменные окружения
 
-### `src/trading_bot/domain`
-
-Это доменная база проекта.
-Здесь описаны:
-
-- перечисления режимов и типов сущностей;
-- базовые Pydantic-модели;
-- протоколы будущих модулей.
-
-Что уже есть:
-
-- `enums.py` — режимы запуска, окружения, биржи, типы рынков, режимы позиций, статус сервиса;
-- `models.py` — инструмент, аккаунт, ордер, позиция, сигнал, решение риска, advisory output, health report;
-- `protocols.py` — контракты `ExchangeAdapter`, `ExecutionVenue`, `Strategy`, `RiskEngine`, `LLMAdvisor`.
-
-Смысл этого слоя: задать единый язык всей системы, чтобы остальные модули работали через понятные типы и интерфейсы.
-
-### `src/trading_bot/config`
-
-Это слой конфигурации.
-
-Что он делает:
-
-- читает `config/base.yaml`;
-- накладывает поверх него `config/dev.yaml` или `config/prod.yaml`;
-- дополняет результат переменными окружения;
-- валидирует итоговую конфигурацию через Pydantic;
-- считает хеш конфигурации.
-
-Смысл этого слоя: сделать конфиг предсказуемым, проверяемым и пригодным для аудита.
-
-### `src/trading_bot/bootstrap`
-
-Это слой сборки приложения.
-
-Что он делает:
-
-- загружает настройки;
-- создает logger;
-- поднимает подключения к Postgres и Redis;
-- создает metrics registry;
-- создает health checker;
-- собирает все в `AppContainer`.
-
-Смысл этого слоя: дать одну точку, где приложение собирается как сервис.
-
-### `src/trading_bot/observability`
-
-Это слой наблюдаемости.
-
-Что уже есть:
-
-- JSON-логирование;
-- метрики Prometheus;
-- health/readiness логика.
-
-Назначение:
-
-- понимать, жив ли сервис;
-- понимать, доступны ли зависимости;
-- иметь базу для дальнейшей эксплуатации и мониторинга.
-
-### `src/trading_bot/storage`
-
-Это слой хранения и инфраструктуры данных.
-
-Что уже есть:
-
-- async engine для Postgres;
-- async client для Redis;
-- ORM-модели;
-- базовые репозитории;
-- обертки для запуска миграций Alembic.
-
-Назначение:
-
-- хранить служебное и торговое состояние;
-- давать основу для истории сигналов, ордеров, позиций и решений риска.
-
-### `src/trading_bot/app.py`
-
-Это FastAPI shell приложения.
-
-Что он отдает:
-
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-
-Это не пользовательский интерфейс, а сервисная HTTP-обвязка для эксплуатации.
-
-### `src/trading_bot/cli.py`
-
-Это управляющий CLI.
-
-Что уже умеет:
-
-- `bot validate-config`
-- `bot doctor`
-- `bot run`
-- `bot db upgrade`
-- `bot db current`
-
-Назначение CLI: локально управлять приложением, конфигом и миграциями без ручных хаотичных команд.
-
-## 5. Как устроена конфигурация
-
-Файлы:
-
-- `config/base.yaml` — базовые значения;
-- `config/dev.yaml` — локальная/разработческая настройка;
-- `config/prod.yaml` — production-настройка.
-
-Обязательные env-переменные:
+Минимально обязательные:
 
 - `TB_ENV`
 - `TB_CONFIG_FILE`
@@ -177,107 +56,56 @@
 - `TB_HTTP_HOST`
 - `TB_HTTP_PORT`
 
-Логика работы:
+Ключи бирж нужны только когда `exchange.private_state_enabled=true`:
 
-1. берется базовый YAML;
-2. накладывается environment-specific YAML;
-3. поверх накладываются значения из env;
-4. результат валидируется;
-5. считается fingerprint конфигурации.
+- `TB_BYBIT_API_KEY`, `TB_BYBIT_API_SECRET` (если `exchange.primary=bybit`)
+- `TB_BINANCE_API_KEY`, `TB_BINANCE_API_SECRET` (если `exchange.primary=binance`)
 
-## 6. Что уже есть в базе данных
+Опционально:
 
-Сейчас создана foundation-схема, а не полная торговая схема.
+- `TB_TELEGRAM_BOT_TOKEN` (если `alerts.telegram.enabled=true`)
+- `TB_OPENROUTER_API_KEY` (если `llm.enabled=true` и `llm.provider=openrouter`)
 
-Таблицы:
+## Команды
 
-- `run_sessions`
-- `config_snapshots`
-- `signal_events`
-- `risk_decisions`
-- `orders`
-- `fills`
-- `positions`
-- `llm_advice`
-
-Смысл этой схемы:
-
-- фиксировать жизненный цикл запуска;
-- хранить снимки конфигурации;
-- хранить сигналы, решения риска, ордера, сделки и позиции;
-- иметь место под advisory-ответы LLM.
-
-## 7. Как приложение запускается по порядку
-
-Текущий порядок старта такой:
-
-1. читаются env-переменные;
-2. загружается и валидируется конфиг;
-3. инициализируется логирование;
-4. создаются подключения к Postgres и Redis;
-5. создаются health checker и metrics registry;
-6. собирается `AppContainer`;
-7. поднимается FastAPI shell;
-8. сервис начинает отвечать на `/health`, `/ready`, `/metrics`.
-
-## 8. Как это использовать сейчас
-
-Локально:
+Paper / replay / backtest:
 
 ```bash
-uv sync
-uv run bot validate-config
-uv run bot doctor
-uv run bot db upgrade
-uv run bot run
+uv run bot run --mode paper --duration-seconds 30
+uv run bot replay --source data/market_archive --speed 10
+uv run bot backtest --source data/market_archive
 ```
 
-Через Docker:
+Live (рекомендуемый порядок):
 
 ```bash
-docker compose up --build
+uv run bot live-preflight
+uv run bot run --mode live --duration-seconds 300
 ```
 
-## 9. Что этот каркас пока не умеет
+Capture (архив market data):
 
-На текущем этапе еще не реализованы:
+```bash
+uv run bot capture --duration-seconds 30 --public-only
+```
 
-- реальные адаптеры Bybit, Binance, MEXC;
-- WebSocket/REST ingestion рыночных данных;
-- нормализация market data;
-- стратегия;
-- risk engine как отдельный рабочий модуль;
-- execution engine;
-- paper trading;
-- live trading;
-- Telegram-управление;
-- реальный LLM-provider;
-- backtest/replay слой.
+## Важно про live
 
-То есть фундамент уже есть, но торговый контур еще не встроен.
+`live` режим может отправлять реальные ордера. Основные предохранители:
 
-## 10. Почему этот костяк важен
+- `runtime.dry_run` и `live.execution_enabled`
+- `exchange.testnet` и `live.allow_mainnet`
+- `live.symbol_allowlist` и notional лимиты (`max_*_usdt`)
+- `live.startup_recovery_policy` (`halt` или `flatten`)
 
-Без такого основания торговый бот быстро превращается в набор скриптов, где:
+Перед live запуском прогоняй `uv run bot live-preflight`.
 
-- конфиг невалидируемый;
-- ордера и позиции некуда сохранять;
-- непонятно, как запускать миграции;
-- нет health-проверок;
-- нет единой структуры модулей;
-- невозможно безопасно расширять систему.
+## Статус
 
-Собранный каркас решает именно эту проблему: он задает правильный технический фундамент для дальнейших фаз.
+Реализованные “срезы”:
 
-## 11. Что логично делать дальше
+- Phase 2: capture pipeline (market archive + storage)
+- Phase 3: paper venue + replay/backtest runtime
+- Phase 6: live execution venue (Bybit + Binance Futures), startup recovery, rollout guards, `live-preflight`
+- Phase 7: advisory LLM layer (OpenRouter provider, workflow queue, budgets, Telegram analyze/playbook)
 
-Следующий естественный шаг — строить уже не инфраструктурный слой, а торговый.
-
-Наиболее разумный порядок:
-
-1. добавить адаптер первой биржи;
-2. подключить public market data;
-3. ввести нормализованный поток событий;
-4. сделать paper execution;
-5. подключить стратегию и risk engine;
-6. только потом переходить к live и LLM.

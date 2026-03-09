@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -21,6 +22,10 @@ from trading_bot.storage.models import (
     AccountSnapshotRecord,
     ConfigSnapshotRecord,
     FillRecord,
+    GridEventRecord,
+    GridOrderLinkRecord,
+    GridPairProfileRecord,
+    GridPairSnapshotRecord,
     InstrumentRecord,
     LLMAdviceRecord,
     OrderRecord,
@@ -623,6 +628,363 @@ class LLMAdviceRepository:
             statement = statement.where(LLMAdviceRecord.run_session_id == run_session_id)
         if advice_type is not None:
             statement = statement.where(LLMAdviceRecord.advice_type == advice_type)
+        async with self.session_factory() as session:
+            result = await session.scalars(statement)
+            return list(result)
+
+
+@dataclass(slots=True)
+class GridPairProfileRepository:
+    session_factory: async_sessionmaker[AsyncSession]
+
+    async def upsert_profile(
+        self,
+        *,
+        run_session_id: str | None,
+        symbol: str,
+        enabled: bool,
+        paused: bool,
+        leverage: Decimal,
+        budget_quote: Decimal,
+        stack_size_quote: Decimal,
+        corridor_pct: Decimal,
+        take_profit_pct: Decimal,
+        orders_per_stack: int,
+        lower_threshold_pct: Decimal,
+        upper_threshold_pct: Decimal,
+        config_json: dict[str, Any],
+    ) -> GridPairProfileRecord:
+        async with self.session_factory() as session:
+            statement = select(GridPairProfileRecord).where(
+                GridPairProfileRecord.run_session_id == run_session_id,
+                GridPairProfileRecord.symbol == symbol,
+            )
+            record = await session.scalar(statement)
+            if record is None:
+                record = GridPairProfileRecord(
+                    run_session_id=run_session_id,
+                    symbol=symbol,
+                    enabled=enabled,
+                    paused=paused,
+                    leverage=leverage,
+                    budget_quote=budget_quote,
+                    stack_size_quote=stack_size_quote,
+                    corridor_pct=corridor_pct,
+                    take_profit_pct=take_profit_pct,
+                    orders_per_stack=orders_per_stack,
+                    lower_threshold_pct=lower_threshold_pct,
+                    upper_threshold_pct=upper_threshold_pct,
+                    config_json=config_json,
+                )
+                session.add(record)
+            else:
+                record.enabled = enabled
+                record.paused = paused
+                record.leverage = leverage
+                record.budget_quote = budget_quote
+                record.stack_size_quote = stack_size_quote
+                record.corridor_pct = corridor_pct
+                record.take_profit_pct = take_profit_pct
+                record.orders_per_stack = orders_per_stack
+                record.lower_threshold_pct = lower_threshold_pct
+                record.upper_threshold_pct = upper_threshold_pct
+                record.config_json = config_json
+                record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def list_profiles(self, *, run_session_id: str | None) -> list[GridPairProfileRecord]:
+        statement = select(GridPairProfileRecord)
+        if run_session_id is not None:
+            statement = statement.where(GridPairProfileRecord.run_session_id == run_session_id)
+        statement = statement.order_by(GridPairProfileRecord.symbol)
+        async with self.session_factory() as session:
+            result = await session.scalars(statement)
+            return list(result)
+
+    async def get_profile(self, *, run_session_id: str | None, symbol: str) -> GridPairProfileRecord | None:
+        statement = select(GridPairProfileRecord).where(
+            GridPairProfileRecord.run_session_id == run_session_id,
+            GridPairProfileRecord.symbol == symbol,
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
+
+    async def set_paused(self, *, run_session_id: str | None, symbol: str, paused: bool) -> GridPairProfileRecord | None:
+        async with self.session_factory() as session:
+            statement = select(GridPairProfileRecord).where(
+                GridPairProfileRecord.run_session_id == run_session_id,
+                GridPairProfileRecord.symbol == symbol,
+            )
+            record = await session.scalar(statement)
+            if record is None:
+                return None
+            record.paused = paused
+            record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def set_enabled(self, *, run_session_id: str | None, symbol: str, enabled: bool) -> GridPairProfileRecord | None:
+        async with self.session_factory() as session:
+            statement = select(GridPairProfileRecord).where(
+                GridPairProfileRecord.run_session_id == run_session_id,
+                GridPairProfileRecord.symbol == symbol,
+            )
+            record = await session.scalar(statement)
+            if record is None:
+                return None
+            record.enabled = enabled
+            record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def delete_profile(self, *, run_session_id: str | None, symbol: str) -> bool:
+        async with self.session_factory() as session:
+            statement = select(GridPairProfileRecord).where(
+                GridPairProfileRecord.run_session_id == run_session_id,
+                GridPairProfileRecord.symbol == symbol,
+            )
+            record = await session.scalar(statement)
+            if record is None:
+                return False
+            await session.delete(record)
+            await session.commit()
+            return True
+
+
+@dataclass(slots=True)
+class GridPairSnapshotRepository:
+    session_factory: async_sessionmaker[AsyncSession]
+
+    async def upsert_snapshot(
+        self,
+        *,
+        run_session_id: str | None,
+        symbol: str,
+        active: bool,
+        paused: bool,
+        max_stacks: int,
+        active_stacks: int,
+        current_stack_anchor: Decimal | None,
+        last_realized_sell_price: Decimal | None,
+        last_price: Decimal | None,
+        state_json: dict[str, Any],
+    ) -> GridPairSnapshotRecord:
+        async with self.session_factory() as session:
+            statement = select(GridPairSnapshotRecord).where(
+                GridPairSnapshotRecord.run_session_id == run_session_id,
+                GridPairSnapshotRecord.symbol == symbol,
+            )
+            record = await session.scalar(statement)
+            if record is None:
+                record = GridPairSnapshotRecord(
+                    run_session_id=run_session_id,
+                    symbol=symbol,
+                    active=active,
+                    paused=paused,
+                    max_stacks=max_stacks,
+                    active_stacks=active_stacks,
+                    current_stack_anchor=current_stack_anchor,
+                    last_realized_sell_price=last_realized_sell_price,
+                    last_price=last_price,
+                    state_json=state_json,
+                    updated_at=utc_now(),
+                )
+                session.add(record)
+            else:
+                record.active = active
+                record.paused = paused
+                record.max_stacks = max_stacks
+                record.active_stacks = active_stacks
+                record.current_stack_anchor = current_stack_anchor
+                record.last_realized_sell_price = last_realized_sell_price
+                record.last_price = last_price
+                record.state_json = state_json
+                record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def get_snapshot(self, *, run_session_id: str | None, symbol: str) -> GridPairSnapshotRecord | None:
+        statement = select(GridPairSnapshotRecord).where(
+            GridPairSnapshotRecord.run_session_id == run_session_id,
+            GridPairSnapshotRecord.symbol == symbol,
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
+
+    async def list_snapshots(self, *, run_session_id: str | None) -> list[GridPairSnapshotRecord]:
+        statement = select(GridPairSnapshotRecord)
+        if run_session_id is not None:
+            statement = statement.where(GridPairSnapshotRecord.run_session_id == run_session_id)
+        statement = statement.order_by(GridPairSnapshotRecord.symbol)
+        async with self.session_factory() as session:
+            result = await session.scalars(statement)
+            return list(result)
+
+
+@dataclass(slots=True)
+class GridOrderLinkRepository:
+    session_factory: async_sessionmaker[AsyncSession]
+
+    async def upsert_link(
+        self,
+        *,
+        run_session_id: str | None,
+        symbol: str,
+        order_id: str,
+        role: str,
+        exchange_order_id: str | None,
+        client_order_id: str | None,
+        stack_index: int | None,
+        level_index: int | None,
+        parent_order_id: str | None,
+        payload_json: dict[str, Any],
+        status: str = "active",
+    ) -> GridOrderLinkRecord:
+        async with self.session_factory() as session:
+            statement = select(GridOrderLinkRecord).where(
+                GridOrderLinkRecord.run_session_id == run_session_id,
+                GridOrderLinkRecord.order_id == order_id,
+            )
+            record = await session.scalar(statement)
+            if record is None:
+                record = GridOrderLinkRecord(
+                    run_session_id=run_session_id,
+                    symbol=symbol,
+                    order_id=order_id,
+                    exchange_order_id=exchange_order_id,
+                    client_order_id=client_order_id,
+                    role=role,
+                    stack_index=stack_index,
+                    level_index=level_index,
+                    parent_order_id=parent_order_id,
+                    payload_json=payload_json,
+                    status=status,
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
+                )
+                session.add(record)
+            else:
+                record.symbol = symbol
+                record.exchange_order_id = exchange_order_id or record.exchange_order_id
+                record.client_order_id = client_order_id or record.client_order_id
+                record.role = role
+                record.stack_index = stack_index
+                record.level_index = level_index
+                record.parent_order_id = parent_order_id
+                record.payload_json = payload_json
+                record.status = status
+                record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def get_by_order_id(self, *, run_session_id: str | None, order_id: str) -> GridOrderLinkRecord | None:
+        statement = select(GridOrderLinkRecord).where(
+            GridOrderLinkRecord.run_session_id == run_session_id,
+            GridOrderLinkRecord.order_id == order_id,
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
+
+    async def get_by_exchange_order_id(
+        self,
+        *,
+        run_session_id: str | None,
+        exchange_order_id: str,
+    ) -> GridOrderLinkRecord | None:
+        statement = select(GridOrderLinkRecord).where(
+            GridOrderLinkRecord.run_session_id == run_session_id,
+            GridOrderLinkRecord.exchange_order_id == exchange_order_id,
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
+
+    async def get_by_client_order_id(
+        self,
+        *,
+        run_session_id: str | None,
+        client_order_id: str,
+    ) -> GridOrderLinkRecord | None:
+        statement = select(GridOrderLinkRecord).where(
+            GridOrderLinkRecord.run_session_id == run_session_id,
+            GridOrderLinkRecord.client_order_id == client_order_id,
+        )
+        async with self.session_factory() as session:
+            return await session.scalar(statement)
+
+    async def list_active_links(
+        self,
+        *,
+        run_session_id: str | None,
+        symbol: str | None = None,
+    ) -> list[GridOrderLinkRecord]:
+        statement = select(GridOrderLinkRecord).where(GridOrderLinkRecord.status == "active")
+        if run_session_id is not None:
+            statement = statement.where(GridOrderLinkRecord.run_session_id == run_session_id)
+        if symbol is not None:
+            statement = statement.where(GridOrderLinkRecord.symbol == symbol)
+        async with self.session_factory() as session:
+            result = await session.scalars(statement)
+            return list(result)
+
+    async def mark_status(self, *, run_session_id: str | None, order_id: str, status: str) -> GridOrderLinkRecord | None:
+        async with self.session_factory() as session:
+            statement = select(GridOrderLinkRecord).where(
+                GridOrderLinkRecord.run_session_id == run_session_id,
+                GridOrderLinkRecord.order_id == order_id,
+            )
+            record = await session.scalar(statement)
+            if record is None:
+                return None
+            record.status = status
+            record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+
+@dataclass(slots=True)
+class GridEventRepository:
+    session_factory: async_sessionmaker[AsyncSession]
+
+    async def append_event(
+        self,
+        *,
+        run_session_id: str | None,
+        symbol: str,
+        event_type: str,
+        payload_json: dict[str, Any],
+    ) -> GridEventRecord:
+        record = GridEventRecord(
+            run_session_id=run_session_id,
+            symbol=symbol,
+            event_type=event_type,
+            payload_json=payload_json,
+            created_at=utc_now(),
+        )
+        async with self.session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def list_recent(
+        self,
+        *,
+        run_session_id: str | None,
+        symbol: str | None = None,
+        limit: int = 100,
+    ) -> list[GridEventRecord]:
+        statement = select(GridEventRecord).order_by(desc(GridEventRecord.created_at)).limit(max(limit, 1))
+        if run_session_id is not None:
+            statement = statement.where(GridEventRecord.run_session_id == run_session_id)
+        if symbol is not None:
+            statement = statement.where(GridEventRecord.symbol == symbol)
         async with self.session_factory() as session:
             result = await session.scalars(statement)
             return list(result)

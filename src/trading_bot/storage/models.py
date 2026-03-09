@@ -223,3 +223,90 @@ class PnlSnapshotRecord(Base):
     unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     drawdown: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class GridPairProfileRecord(Base):
+    __tablename__ = "grid_pair_profiles"
+    __table_args__ = (
+        UniqueConstraint("run_session_id", "symbol", name="uq_grid_pair_profiles_run_symbol"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
+    run_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    leverage: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=Decimal("1"))
+    budget_quote: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    stack_size_quote: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    corridor_pct: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    take_profit_pct: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    orders_per_stack: Mapped[int] = mapped_column(nullable=False)
+    lower_threshold_pct: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    upper_threshold_pct: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    config_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class GridPairSnapshotRecord(Base):
+    __tablename__ = "grid_pair_snapshots"
+    __table_args__ = (
+        UniqueConstraint("run_session_id", "symbol", name="uq_grid_pair_snapshots_run_symbol"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
+    run_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    max_stacks: Mapped[int] = mapped_column(nullable=False, default=1)
+    active_stacks: Mapped[int] = mapped_column(nullable=False, default=0)
+    current_stack_anchor: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    last_realized_sell_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    state_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class GridOrderLinkRecord(Base):
+    __tablename__ = "grid_order_links"
+    __table_args__ = (
+        UniqueConstraint("run_session_id", "order_id", name="uq_grid_order_links_run_order"),
+        Index("ix_grid_order_links_exchange_order_id", "exchange_order_id"),
+        Index("ix_grid_order_links_client_order_id", "client_order_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
+    run_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    order_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    exchange_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    stack_index: Mapped[int | None] = mapped_column(nullable=True)
+    level_index: Mapped[int | None] = mapped_column(nullable=True)
+    parent_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class GridEventRecord(Base):
+    __tablename__ = "grid_events"
+    __table_args__ = (
+        Index("ix_grid_events_run_symbol_created_at", "run_session_id", "symbol", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
+    run_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)

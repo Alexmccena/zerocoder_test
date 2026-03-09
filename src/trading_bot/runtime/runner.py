@@ -19,11 +19,13 @@ from trading_bot.marketdata.events import KlineEvent, MarketEvent
 from trading_bot.marketdata.snapshots import FeatureProvider, MarketSnapshotBuilder
 from trading_bot.observability.metrics import AppMetrics
 from trading_bot.runtime.control import RuntimeControlPlane
+from trading_bot.runtime.grid_runtime import GridRuntime
 from trading_bot.runtime.reconciliation import RuntimeReconciler
 from trading_bot.runtime.reporting import build_runtime_summary
 from trading_bot.runtime.state import RuntimeStateStore
 from trading_bot.storage.redis import (
     publish_runtime_account,
+    publish_runtime_grid_pairs,
     publish_runtime_open_orders,
     publish_runtime_positions,
     publish_runtime_snapshot,
@@ -74,6 +76,7 @@ class RuntimeRunner:
         control_plane: RuntimeControlPlane | None = None,
         alert_sink: OperationalAlertSink | None = None,
         llm_service: LLMAdvisoryService | None = None,
+        grid_runtime: GridRuntime | None = None,
     ) -> None:
         self.config = config
         self.config_hash = config_hash
@@ -102,6 +105,7 @@ class RuntimeRunner:
         self.control_plane = control_plane
         self.alert_sink = alert_sink
         self.llm_service = llm_service
+        self.grid_runtime = grid_runtime
         self._redis_degraded = False
         self._reconciler = RuntimeReconciler(execution_engine=execution_engine)
         self._last_reconciliation_at: datetime | None = None
@@ -179,6 +183,10 @@ class RuntimeRunner:
                     )
                     raise RuntimeError(recovery.halt_reason or "startup_recovery_halt")
             state.sync_brackets(self.execution_engine.active_brackets())
+            if self.grid_runtime is not None and self.grid_runtime.is_enabled:
+                self.grid_runtime.set_run_session(run_session.id)
+                await self.grid_runtime.initialize(as_of=initial_account.updated_at)
+                self.metrics.set_grid_pairs_managed(len(self.grid_runtime.list_pairs()))
             await self._publish_runtime_state(run_session.id, state)
             await self._emit_alert(
                 kind="startup",
@@ -289,12 +297,23 @@ class RuntimeRunner:
             state=state,
             result=drained_before,
         )
-        if self.control_plane is not None:
-            self.control_plane.note_market_event(as_of=event.event_ts)
-
         signals = 0
         orders_count = len(drained_before.orders)
         fills_count = len(drained_before.fills)
+        latest_pnl = drained_before_pnl
+        follow_orders, follow_fills, follow_pnl = await self._process_grid_followups(
+            run_session_id=run_session_id,
+            state=state,
+            as_of=event.event_ts,
+            base_result=drained_before,
+        )
+        orders_count += follow_orders
+        fills_count += follow_fills
+        if follow_pnl is not None:
+            latest_pnl = follow_pnl
+        if self.control_plane is not None:
+            self.control_plane.note_market_event(as_of=event.event_ts)
+
         market_event_result = await self.execution_engine.on_market_event(symbol=event.symbol, snapshot=snapshot, as_of=event.event_ts)
         orders_count += len(market_event_result.orders)
         fills_count += len(market_event_result.fills)
@@ -303,6 +322,16 @@ class RuntimeRunner:
             state=state,
             result=market_event_result,
         )
+        follow_orders, follow_fills, follow_pnl = await self._process_grid_followups(
+            run_session_id=run_session_id,
+            state=state,
+            as_of=event.event_ts,
+            base_result=market_event_result,
+        )
+        orders_count += follow_orders
+        fills_count += follow_fills
+        if follow_pnl is not None:
+            latest_pnl = follow_pnl
         if drained_before_pnl is not None and latest_pnl is None:
             latest_pnl = drained_before_pnl
         if self._should_reconcile(event.event_ts):
@@ -314,6 +343,16 @@ class RuntimeRunner:
                 state=state,
                 result=reconciliation_result,
             )
+            follow_orders, follow_fills, follow_pnl = await self._process_grid_followups(
+                run_session_id=run_session_id,
+                state=state,
+                as_of=event.event_ts,
+                base_result=reconciliation_result,
+            )
+            orders_count += follow_orders
+            fills_count += follow_fills
+            if follow_pnl is not None:
+                latest_pnl = follow_pnl
             if persisted_pnl is not None:
                 latest_pnl = persisted_pnl
             self._last_reconciliation_at = event.event_ts
@@ -326,6 +365,48 @@ class RuntimeRunner:
         fills_count += control_fills
         if control_pnl is not None:
             latest_pnl = control_pnl
+
+        if self.grid_runtime is not None and self.grid_runtime.is_enabled:
+            grid_result = await self.grid_runtime.on_market_event(snapshot=snapshot, as_of=event.event_ts)
+            orders_count += len(grid_result.orders)
+            fills_count += len(grid_result.fills)
+            persisted_grid_pnl = await self._persist_execution_result(
+                run_session_id=run_session_id,
+                state=state,
+                result=grid_result,
+            )
+            follow_orders, follow_fills, follow_pnl = await self._process_grid_followups(
+                run_session_id=run_session_id,
+                state=state,
+                as_of=event.event_ts,
+                base_result=grid_result,
+            )
+            orders_count += follow_orders
+            fills_count += follow_fills
+            if follow_pnl is not None:
+                latest_pnl = follow_pnl
+            if persisted_grid_pnl is not None:
+                latest_pnl = persisted_grid_pnl
+            drained_after_grid = await self.execution_engine.drain_pending_updates(as_of=event.event_ts)
+            orders_count += len(drained_after_grid.orders)
+            fills_count += len(drained_after_grid.fills)
+            drained_grid_pnl = await self._persist_execution_result(
+                run_session_id=run_session_id,
+                state=state,
+                result=drained_after_grid,
+            )
+            follow_orders, follow_fills, follow_pnl = await self._process_grid_followups(
+                run_session_id=run_session_id,
+                state=state,
+                as_of=event.event_ts,
+                base_result=drained_after_grid,
+            )
+            orders_count += follow_orders
+            fills_count += follow_fills
+            if follow_pnl is not None:
+                latest_pnl = follow_pnl
+            if drained_grid_pnl is not None:
+                latest_pnl = drained_grid_pnl
         await self._publish_runtime_state(run_session_id, state)
         self._queue_periodic_llm_if_due(
             run_session_id=run_session_id,
@@ -333,6 +414,9 @@ class RuntimeRunner:
             as_of=event.event_ts,
             symbol=event.symbol,
         )
+
+        if self.grid_runtime is not None and self.grid_runtime.is_enabled:
+            return signals, orders_count, fills_count, latest_pnl
 
         if not evaluate_strategy or not self._should_evaluate_strategy(event=event, snapshot=snapshot):
             return signals, orders_count, fills_count, latest_pnl
@@ -431,6 +515,28 @@ class RuntimeRunner:
                 latest_pnl = persisted_pnl
 
         return signals, orders_count, fills_count, latest_pnl
+
+    async def _process_grid_followups(
+        self,
+        *,
+        run_session_id: str,
+        state: RuntimeStateStore,
+        as_of: datetime,
+        base_result: ExecutionResult,
+    ) -> tuple[int, int, PnlSnapshot | None]:
+        if self.grid_runtime is None or not self.grid_runtime.is_enabled:
+            return 0, 0, None
+        if not base_result.orders and not base_result.fills:
+            return 0, 0, None
+        follow = await self.grid_runtime.on_execution_result(result=base_result, as_of=as_of)
+        order_count = len(follow.orders)
+        fill_count = len(follow.fills)
+        latest_pnl = await self._persist_execution_result(
+            run_session_id=run_session_id,
+            state=state,
+            result=follow,
+        )
+        return order_count, fill_count, latest_pnl
 
     def _build_signal_payload(self, *, intent, features) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -640,6 +746,12 @@ class RuntimeRunner:
                 run_session_id=run_session_id,
                 payload={"items": [order.model_dump(mode="json") for order in state.state.open_orders.values()]},
             )
+            if self.grid_runtime is not None and self.grid_runtime.is_enabled:
+                await publish_runtime_grid_pairs(
+                    self.redis_client,
+                    run_session_id=run_session_id,
+                    payload=self.grid_runtime.status_payload(),
+                )
             for snapshot in state.state.market_state_by_symbol.values():
                 await publish_runtime_snapshot(
                     self.redis_client,
